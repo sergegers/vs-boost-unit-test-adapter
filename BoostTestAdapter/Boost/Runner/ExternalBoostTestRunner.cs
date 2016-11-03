@@ -4,11 +4,11 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 
 using System;
-using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using BoostTestAdapter.Settings;
 using BoostTestAdapter.Utility;
+using BoostTestAdapter.Utility.ExecutionContext;
 
 namespace BoostTestAdapter.Boost.Runner
 {
@@ -33,7 +33,7 @@ namespace BoostTestAdapter.Boost.Runner
         #endregion Members
 
         /// <summary>
-        /// Constructo
+        /// Constructor
         /// </summary>
         /// <param name="source">The test source (dll/exe) for which this external test runner will execute</param>
         /// <param name="settings">External test runner configuration</param>
@@ -58,17 +58,21 @@ namespace BoostTestAdapter.Boost.Runner
         #region BoostTestRunnerBase
 
         /// <summary>
-        /// Provides a ProcessStartInfo structure containing the necessary information to launch the test process.
+        /// Provides a ProcessExecutionContextArgs structure containing the necessary information to launch the test process.
         /// Aggregates the BoostTestRunnerCommandLineArgs structure with the command-line arguments specified at configuration stage.
         /// </summary>
         /// <param name="args">The Boost Test Framework command line arguments</param>
         /// <param name="settings">The Boost Test Runner settings</param>
-        /// <returns>A valid ProcessStartInfo structure to launch the test executable</returns>
-        protected override ProcessStartInfo GetStartInfo(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings)
+        /// <returns>A valid ProcessExecutionContextArgs structure to launch the test executable</returns>
+        protected override ProcessExecutionContextArgs GetExecutionContextArgs(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings)
         {
-            ProcessStartInfo info = base.GetStartInfo(args, settings);
+            ProcessExecutionContextArgs info = base.GetExecutionContextArgs(args, settings);
 
-            CommandEvaluator evaluator = BuildEvaluator(this.Source, args, settings);
+            BoostTestRunnerCommandLineArgs tmpArgs = args.Clone();
+            tmpArgs.StandardErrorFile = null;
+            tmpArgs.StandardOutFile = null;
+
+            CommandEvaluator evaluator = BuildEvaluator(this.Source, tmpArgs, settings);
             CommandEvaluationResult result = evaluator.Evaluate(this.Settings.ExecutionCommandLine.Arguments);
             
             string cmdLineArgs = result.Result;
@@ -77,7 +81,14 @@ namespace BoostTestAdapter.Boost.Runner
                 cmdLineArgs = result.Result + (result.Result.EndsWith(" ", StringComparison.Ordinal) ? string.Empty : " ") + args.ToString();
             }
 
-            info.FileName = this.Settings.ExecutionCommandLine.FileName;
+            BoostTestRunnerCommandLineArgs redirection = new BoostTestRunnerCommandLineArgs
+            {
+                StandardOutFile = args.StandardOutFile,
+                StandardErrorFile = args.StandardErrorFile
+            };
+            cmdLineArgs += redirection.ToString();
+           
+            info.FilePath = this.Settings.ExecutionCommandLine.FileName;
             info.Arguments = cmdLineArgs;
 
             return info;
@@ -108,7 +119,7 @@ namespace BoostTestAdapter.Boost.Runner
         {
             CommandEvaluator evaluator = new CommandEvaluator();
 
-            evaluator.SetVariable(SourcePlaceholder, source);
+            evaluator.SetVariable(SourcePlaceholder, "\"" + source + "\"");
 
             return evaluator;
         }
@@ -124,11 +135,7 @@ namespace BoostTestAdapter.Boost.Runner
         {
             CommandEvaluator evaluator = BuildEvaluator(source);
 
-            if (settings.RunnerTimeout > -1)
-            {
-                evaluator.SetVariable(TimeoutPlaceholder, settings.RunnerTimeout.ToString(CultureInfo.InvariantCulture));
-            }
-
+            evaluator.SetVariable(TimeoutPlaceholder, Math.Max(0, settings.Timeout).ToString(CultureInfo.InvariantCulture));
             evaluator.SetVariable(BoostArgsPlaceholder, args.ToString());
 
             return evaluator;

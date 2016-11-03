@@ -4,13 +4,13 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Management;
 using BoostTestAdapter.Utility;
-using Microsoft.VisualStudio.TestPlatform.ObjectModel.Adapter;
+using System.ComponentModel;
+using BoostTestAdapter.Utility.ExecutionContext;
 
 namespace BoostTestAdapter.Boost.Runner
 {
@@ -44,29 +44,72 @@ namespace BoostTestAdapter.Boost.Runner
 
         #region IBoostTestRunner
 
-        public virtual void Debug(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings, IFrameworkHandle framework)
+        public virtual void Execute(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings, IProcessExecutionContext executionContext)
         {
             Utility.Code.Require(settings, "settings");
+            Utility.Code.Require(executionContext, "executionContext");
 
-            using (Process process = Debug(framework, GetStartInfo(args, settings)))
+            using (Process process = executionContext.LaunchProcess(GetExecutionContextArgs(args, settings)))
             {
-                MonitorProcess(process, settings.RunnerTimeout);
+                MonitorProcess(process, settings.Timeout);
             }
         }
-
-        public virtual void Run(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings)
-        {
-            Utility.Code.Require(settings,"settings");
-
-            using (Process process = Run(GetStartInfo(args, settings)))
-            {
-                MonitorProcess(process, settings.RunnerTimeout);
-            }
-        }
-
+        
         public virtual string Source
         {
-            get { return this.TestRunnerExecutable;  }
+            get { return this.TestRunnerExecutable; }
+        }
+
+        public virtual bool ListContentSupported
+        {
+            get
+            {
+                bool supported = false;
+
+                // Try to locate the list_content function debug symbol. If this is not available, this implies that:
+                // - Debug symbols are not available for the requested source
+                // - Debug symbols are available but the source is not a Boost Unit Test version >= 3 module
+                try
+                {
+                    // Search symbols on the TestRunner not on the source. Source could be .dll which may not contain list_content functionality.
+                    using (DebugHelper dbgHelp = new DebugHelper(this.TestRunnerExecutable))
+                    {
+                        supported =
+                            dbgHelp.ContainsSymbol("boost::unit_test::runtime_config::LIST_CONTENT");   // Boost 1.60/1.61
+                    }
+                }
+                catch (Win32Exception ex)
+                {
+                    Logger.Exception(ex, "Could not create a DBGHELP instance for '{0}' to determine whether symbols are available.", this.Source);
+                }
+                
+                if (!supported)
+                {
+                    Logger.Warn("Could not locate debug symbols for '{0}'. To make use of '--list_content' discovery, ensure that debug symbols are available or make use of '<ForceListContent>' via a .runsettings file.", this.TestRunnerExecutable);
+                }
+
+                return supported;
+            }
+        }
+
+        /// <summary>
+        /// Provides a ProcessExecutionContextArgs structure containing the necessary information to launch the test process.
+        /// Aggregates the BoostTestRunnerCommandLineArgs structure with the command-line arguments specified at configuration stage.
+        /// </summary>
+        /// <param name="args">The Boost Test Framework command line arguments</param>
+        /// <param name="settings">The Boost Test Runner settings</param>
+        /// <returns>A valid ProcessExecutionContextArgs structure to launch the test executable</returns>
+        protected virtual ProcessExecutionContextArgs GetExecutionContextArgs(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings)
+        {
+            Code.Require(args, "args");
+
+            return new ProcessExecutionContextArgs()
+            {
+                FilePath = this.TestRunnerExecutable,
+                WorkingDirectory = args.WorkingDirectory,
+                Arguments = args.ToString(),
+                EnvironmentVariables = args.Environment
+            };
         }
 
         #endregion IBoostTestRunner
@@ -88,74 +131,7 @@ namespace BoostTestAdapter.Boost.Runner
                 throw new TimeoutException(timeout);
             }
         }
-
-        /// <summary>
-        /// Starts a Process in a debug session using the provided command line arguments string.
-        /// </summary>
-        /// <param name="framework">The IFrameworkHandle which provides debug session handling.</param>
-        /// <param name="info">The process start info which will be used to launch the external test program.</param>
-        /// <returns>The newly spawned debug process.</returns>
-        private static Process Debug(IFrameworkHandle framework, ProcessStartInfo info)
-        {
-            if (framework == null)
-            {
-                return Run(info);
-            }
-
-            Dictionary<string, string> environment =
-                info.EnvironmentVariables.Cast<DictionaryEntry>().ToDictionary(
-                    item => item.Key.ToString(),
-                    item => item.Value.ToString()
-                );
-
-            int pid = framework.LaunchProcessWithDebuggerAttached(
-                info.FileName,
-                info.WorkingDirectory,
-                info.Arguments,
-                environment
-            );
-
-            // Get a process on the local computer, using the process id.
-            return Process.GetProcessById(pid);
-        }
-
-        /// <summary>
-        /// Starts a Process using the provided command line arguments string.
-        /// </summary>
-        /// <param name="info">The process start info which will be used to launch the external test program.</param>
-        /// <returns>The newly spawned debug process.</returns>
-        private static Process Run(ProcessStartInfo info)
-        {
-            // Wrap the process inside cmd.exe in so that we can redirect stdout,
-            // stderr to file using a similar mechanism as available for Debug runs.
-            return Process.Start(ProcessStartInfoEx.StartThroughCmdShell(info.Clone()));
-        }
-
-        /// <summary>
-        /// Builds a ProcessStartInfo instance using the provided command line string.
-        /// </summary>
-        /// <param name="args">The command line arguments.</param>
-        /// <param name="settings">The Boost Test runner settings currently being applied.</param>
-        /// <returns>A ProcessStartInfo instance.</returns>
-        protected virtual ProcessStartInfo GetStartInfo(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings)
-        {
-            Utility.Code.Require(args, "args");
-
-            ProcessStartInfo startInfo = new ProcessStartInfo
-            {
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                WindowStyle = ProcessWindowStyle.Hidden,
-                WorkingDirectory = args.WorkingDirectory,
-                FileName = this.TestRunnerExecutable,
-                Arguments = args.ToString(),
-                RedirectStandardError = false,
-                RedirectStandardInput = false
-            };
-
-            return startInfo;
-        }
-
+        
         /// <summary>
         ///     Kills a process identified by its pid and all its children processes
         /// </summary>
@@ -228,7 +204,7 @@ namespace BoostTestAdapter.Boost.Runner
         /// Kill a process immediately
         /// </summary>
         /// <param name="process">process object</param>
-        /// <returns>return true if success or false if it was not successfull</returns>
+        /// <returns>return true if success or false if it was not successful</returns>
         private static bool KillProcess(Process process)
         {
             return KillProcess(process, 0);
@@ -239,7 +215,7 @@ namespace BoostTestAdapter.Boost.Runner
         /// </summary>
         /// <param name="process">process object</param>
         /// <param name="killTimeout">the timeout in milliseconds to note correct process termination</param>
-        /// <returns>return true if success or false if it was not successfull</returns>
+        /// <returns>return true if success or false if it was not successful</returns>
         private static bool KillProcess(Process process, int killTimeout)
         {
             if (process.HasExited)

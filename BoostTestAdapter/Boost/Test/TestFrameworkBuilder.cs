@@ -3,6 +3,9 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 
+using System.Linq;
+using System.Collections.Generic;
+
 using BoostTestAdapter.Utility;
 
 namespace BoostTestAdapter.Boost.Test
@@ -30,14 +33,34 @@ namespace BoostTestAdapter.Boost.Test
         /// <param name="source">Boost Test EXE/Dll file path</param>
         /// <param name="name">Name of Master Test Suite</param>
         /// <param name="id">Id of Master Test Suite</param>
-        public TestFrameworkBuilder(string source, string name, int? id)
+        public TestFrameworkBuilder(string source, string name, int? id) :
+            this(source, name, id, true)
+        {
+        }
+        
+
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        /// <param name="source">Boost Test EXE/Dll file path</param>
+        /// <param name="name">Name of Master Test Suite</param>
+        /// <param name="id">Id of Master Test Suite</param>
+        /// <param name="enabled">Master Test Suite enabled or disabled (due to Boost 1.59)</param>
+        public TestFrameworkBuilder(string source, string name, int? id, bool enabled)
         {
             this.Source = source;
+
+            if (string.IsNullOrEmpty(name))
+            {
+                name = QualifiedNameBuilder.DefaultMasterTestSuiteName;
+            }
 
             this.MasterTestSuite = new TestSuite(name, null);
             this.MasterTestSuite.Id = id;
 
             this.Parent = this.MasterTestSuite;
+
+            this.MasterTestSuite.DefaultEnabled = enabled;
         }
 
         #endregion Constructors
@@ -81,10 +104,31 @@ namespace BoostTestAdapter.Boost.Test
         /// <returns>this</returns>
         public TestFrameworkBuilder TestSuite(string name, int? id)
         {
+            return this.TestSuite(name, id, null);
+        }
+
+        /// <summary>
+        /// Builds a new TestSuite. Starts a new context in which
+        /// newly created TestUnits will be parented to this TestSuite.
+        /// </summary>
+        /// <param name="name">Test Suite Name</param>
+        /// <param name="id">Test Suite Id</param>
+        /// <param name="source">Test Suite source file debug information</param>
+        /// <returns>this</returns>
+        public TestFrameworkBuilder TestSuite(string name, int? id, SourceFileInfo source)
+        {
+            return this.TestSuite(name, id, source, true);
+        }
+
+        public TestFrameworkBuilder TestSuite(string name, int? id, SourceFileInfo source, bool enabled)
+        {
             TestSuite testSuite = new TestSuite(name, this.Parent);
             testSuite.Id = id;
+            testSuite.Source = source;
 
             this.Parent = testSuite;
+
+            testSuite.DefaultEnabled = enabled;
 
             return this;
         }
@@ -96,7 +140,7 @@ namespace BoostTestAdapter.Boost.Test
         /// <returns>this</returns>
         public TestFrameworkBuilder TestCase(string name)
         {
-            return this.TestCase(name, null, null);
+            return this.TestCase(name, null);
         }
 
         /// <summary>
@@ -119,12 +163,43 @@ namespace BoostTestAdapter.Boost.Test
         /// <returns>this</returns>
         public TestFrameworkBuilder TestCase(string name, int? id, SourceFileInfo source)
         {
+            return this.TestCase(name, id, source, Enumerable.Empty<string>());
+        }
+
+        /// <summary>
+        /// Builds a new TestCase.
+        /// </summary>
+        /// <param name="name">Test Case Name</param>
+        /// <param name="id">Test Case Id</param>
+        /// <param name="source">Test Case source file debug information</param>
+        /// <param name="labels">Test Case labels</param>
+        /// <returns>this</returns>
+        public TestFrameworkBuilder TestCase(string name, int? id, SourceFileInfo source, IEnumerable<string> labels)
+        {
+            return this.TestCase(name, id, source, labels, true);
+        }
+
+        /// <summary>
+        /// Builds a new TestCase.
+        /// </summary>
+        /// <param name="name">Test Case Name</param>
+        /// <param name="id">Test Case Id</param>
+        /// <param name="source">Test Case source file debug information</param>
+        /// <param name="labels">Test Case labels</param>
+        /// <param name="enabled">Test Case enabled or disabled</param>
+        /// <returns>this</returns>
+        public TestFrameworkBuilder TestCase(string name, int? id, SourceFileInfo source, IEnumerable<string> labels, bool enabled)
+        {
             TestCase testCase = new TestCase(name, this.Parent);
+
             testCase.Id = id;
             testCase.Source = source;
+            testCase.Labels = ((labels == null)? Enumerable.Empty<string>() : labels);
+            testCase.DefaultEnabled = enabled;
 
             return this;
         }
+
 
         /// <summary>
         /// Ends the current TestSuite context and moves up one level in the hierarchy.

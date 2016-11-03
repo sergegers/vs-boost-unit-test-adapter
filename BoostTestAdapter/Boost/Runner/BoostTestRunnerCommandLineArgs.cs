@@ -61,17 +61,17 @@ namespace BoostTestAdapter.Boost.Runner
         Default = Confirm
     }
 
-    public class ExecutionPath
+    /// <summary>
+    /// Output format options for Boost Test --list_content output.
+    /// Reference: http://www.boost.org/doc/libs/1_60_0/libs/test/doc/html/boost_test/utf_reference/rt_param_reference/list_content.html
+    /// </summary>
+    public enum ListContentFormat
     {
-        public string TestName { get; set; }
-        public uint PathNumber { get; set; }
+        HRF, // Human Readable Format
+        DOT,
 
-        public override string ToString()
-        {
-            return this.TestName + ':' + this.PathNumber;
-        }
+        Default = HRF
     }
-
 
     /// <summary>
     /// Aggregates all possible command line options made available by the Boost Test framework.
@@ -82,31 +82,30 @@ namespace BoostTestAdapter.Boost.Runner
     {
         #region Constants
 
-        private const string RunTestArg = "--run_test";
+        internal const string RunTestArg = "--run_test";
 
-        private const string LogFormatArg = "--log_format";
-        private const string LogLevelArg = "--log_level";
-        private const string LogSinkArg = "--log_sink";
+        internal const string LogFormatArg = "--log_format";
+        internal const string LogLevelArg = "--log_level";
+        internal const string LogSinkArg = "--log_sink";
 
-        private const string ReportFormatArg = "--report_format";
-        private const string ReportLevelArg = "--report_level";
-        private const string ReportSinkArg = "--report_sink";
+        internal const string ReportFormatArg = "--report_format";
+        internal const string ReportLevelArg = "--report_level";
+        internal const string ReportSinkArg = "--report_sink";
 
-        private const string DetectMemoryLeakArg = "--detect_memory_leak";
+        internal const string DetectMemoryLeakArg = "--detect_memory_leak";
 
-        private const string ShowProgressArg = "--show_progress";
-        private const string BuildInfoArg = "--build_info";
-        private const string AutoStartDebugArg = "--auto_start_dbg";
-        private const string CatchSystemErrorsArg = "--catch_system_errors";
-        private const string BreakExecPathArg = "--break_exec_path";
-        private const string ColorOutputArg = "--color_output";
-        private const string ResultCodeArg = "--result_code";
-        private const string RandomArg = "--random";
-        private const string UseAltStackArg = "--use_alt_stack";
-        private const string DetectFPExceptionsArg = "--detect_fp_exceptions";
-        private const string SavePatternArg = "--save_pattern";
-        private const string ListContentArg = "--list_content";
-        private const string HelpArg = "--help";
+        internal const string ShowProgressArg = "--show_progress";
+        internal const string BuildInfoArg = "--build_info";
+        internal const string AutoStartDebugArg = "--auto_start_dbg";
+        internal const string CatchSystemErrorsArg = "--catch_system_errors";
+        internal const string ColorOutputArg = "--color_output";
+        internal const string ResultCodeArg = "--result_code";
+        internal const string RandomArg = "--random";
+        internal const string UseAltStackArg = "--use_alt_stack";
+        internal const string DetectFPExceptionsArg = "--detect_fp_exceptions";
+        internal const string SavePatternArg = "--save_pattern";
+        internal const string ListContentArg = "--list_content";
+        internal const string HelpArg = "--help";
 
         private const string TestSeparator = ",";
 
@@ -152,15 +151,16 @@ namespace BoostTestAdapter.Boost.Runner
             this.BuildInfo = false;
             this.AutoStartDebug = "no";
             this.CatchSystemErrors = true;
-            this.BreakExecPath = new List<ExecutionPath>();
             this.ColorOutput = false;
             this.ResultCode = true;
             this.Random = 0;
             this.UseAltStack = true;
             this.DetectFPExceptions = false;
             this.SavePattern = false;
-            this.ListContent = false;
+            this.ListContent = null;
             this.Help = false;
+
+            this.Environment = new Dictionary<string, string>();
         }
 
         #endregion Constructors
@@ -169,6 +169,11 @@ namespace BoostTestAdapter.Boost.Runner
         /// Specify the process' working directory
         /// </summary>
         public string WorkingDirectory { get; set; }
+
+        /// <summary>
+        /// Specifies the process's environment (variables)
+        /// </summary>
+        public IDictionary<string, string> Environment { get; private set; }
 
         /// <summary>
         /// List of fully qualified name tests which are to be executed.
@@ -254,12 +259,6 @@ namespace BoostTestAdapter.Boost.Runner
         public bool CatchSystemErrors { get; set; }
 
         /// <summary>
-        /// Identify execution paths for certain tests in which execution should break.
-        /// </summary>
-        /// <remarks>Introduced in Boost 1.59 / Boost Test 3</remarks>
-        public IList<ExecutionPath> BreakExecPath { get; private set; }
-
-        /// <summary>
         /// States whether standard output text is colour coded.
         /// </summary>
         /// <remarks>Introduced in Boost 1.59 / Boost Test 3</remarks>
@@ -281,7 +280,7 @@ namespace BoostTestAdapter.Boost.Runner
         public bool UseAltStack { get; set; }
 
         /// <summary>
-        /// Instructs the Boost UTF to break on floating-point execptions.
+        /// Instructs the Boost UTF to break on floating-point exceptions.
         /// </summary>
         public bool DetectFPExceptions { get; set; }
 
@@ -295,7 +294,7 @@ namespace BoostTestAdapter.Boost.Runner
         /// The Boost UTF lists all tests which are to be executed without actually executing the tests.
         /// </summary>
         /// <remarks>Introduced in Boost 1.59 / Boost Test 3</remarks>
-        public bool ListContent { get; set; }
+        public ListContentFormat? ListContent { get; set; }
 
         /// <summary>
         /// Help output.
@@ -333,7 +332,7 @@ namespace BoostTestAdapter.Boost.Runner
                 this._stdErrFile = value;
             }
         }
-
+        
         /// <summary>
         /// Provides a string representation of the command line.
         /// </summary>
@@ -348,19 +347,19 @@ namespace BoostTestAdapter.Boost.Runner
                 AddArgument(HelpArg, args);
 
                 // return immediately since Boost UTF should ignore the rest of the arguments
-                return AppendRedirection(args).ToString();
+                return AppendRedirection(args).ToString().TrimEnd();
             }
 
             // --list_content
-            if (this.ListContent)
+            if (this.ListContent != null)
             {
-                AddArgument(ListContentArg, args);
+                AddArgument(ListContentArg, ListContentFormatToString(this.ListContent.Value), args);
 
                 // return immediately since Boost UTF should ignore the rest of the arguments
-                return AppendRedirection(args).ToString();
+                return AppendRedirection(args).ToString().TrimEnd();
             }
 
-            // --run_tests=a,b,c
+            // --run_test=a,b,c
             if (this.Tests.Count > 0)
             {
                 AddArgument(RunTestArg, string.Join(TestSeparator, this.Tests), args);
@@ -390,12 +389,6 @@ namespace BoostTestAdapter.Boost.Runner
                 AddArgument(CatchSystemErrorsArg, No, args);
             }
 
-            // --break_exec_path=Test1:14 Test2:15
-            if (this.BreakExecPath.Count > 0)
-            {
-                AddArgument(BreakExecPathArg, string.Join(" ", this.BreakExecPath), args);
-            }
-
             // --color_output=yes
             if (this.ColorOutput)
             {
@@ -417,7 +410,7 @@ namespace BoostTestAdapter.Boost.Runner
             // --log_sink=log.xml
             if (!string.IsNullOrEmpty(this._logFile))
             {
-                AddArgument(LogSinkArg, this._logFile, args);
+                AddArgument(LogSinkArg, this.LogFile, args);
             }
 
             // --report_format=xml
@@ -435,7 +428,7 @@ namespace BoostTestAdapter.Boost.Runner
             // --report_sink=report.xml
             if (!string.IsNullOrEmpty(this._reportFile))
             {
-                AddArgument(ReportSinkArg, this._reportFile, args);
+                AddArgument(ReportSinkArg, this.ReportFile, args);
             }
 
             // --result_code=no
@@ -482,13 +475,13 @@ namespace BoostTestAdapter.Boost.Runner
             // > std.out
             if (!string.IsNullOrEmpty(this._stdOutFile))
             {
-                args.Append(RedirectionOperator).Append(ArgSeparator).Append(Quote(this._stdOutFile)).Append(ArgSeparator);
+                args.Append(RedirectionOperator).Append(ArgSeparator).Append(Quote(this.StandardOutFile)).Append(ArgSeparator);
             }
 
             // 2> std.err
             if (!string.IsNullOrEmpty(this._stdErrFile))
             {
-                args.Append(ErrRedirectionOperator).Append(ArgSeparator).Append(Quote(this._stdErrFile));
+                args.Append(ErrRedirectionOperator).Append(ArgSeparator).Append(Quote(this.StandardErrorFile));
             }
 
             return args;
@@ -508,6 +501,7 @@ namespace BoostTestAdapter.Boost.Runner
 
             return path;
         }
+        
 
         /// <summary>
         /// Provides a (valid) string representation of the provided OutputFormat.
@@ -517,7 +511,8 @@ namespace BoostTestAdapter.Boost.Runner
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Globalization", "CA1308:NormalizeStringsToUppercase")]
         private static string OutputFormatToString(OutputFormat value)
         {
-            return value.ToString().ToLowerInvariant();
+            // serge: boost 1.60 requires uppercase input
+            return value.ToString();
         }
 
         /// <summary>
@@ -530,6 +525,16 @@ namespace BoostTestAdapter.Boost.Runner
             return LevelToString(value.ToString());
         }
 
+        /// <summary>
+        /// Provides a (valid) string representation of the provided ListContentFormat.
+        /// </summary>
+        /// <param name="value">The value to serialize to string.</param>
+        /// <returns>A (valid) string representation of the provided ListContentFormat.</returns>
+        private static string ListContentFormatToString(ListContentFormat value)
+        {
+            return value.ToString();
+        }
+        
         /// <summary>
         /// Provides a (valid) string representation of the provided ReportLevel.
         /// </summary>
@@ -630,6 +635,9 @@ namespace BoostTestAdapter.Boost.Runner
 
             clone.WorkingDirectory = this.WorkingDirectory;
 
+            // Shallow copy
+            clone.Environment = new Dictionary<string, string>(this.Environment);
+
             // Deep copy
             clone.Tests = new List<string>(this.Tests);
 
@@ -650,9 +658,6 @@ namespace BoostTestAdapter.Boost.Runner
             clone.BuildInfo = this.BuildInfo;
             clone.AutoStartDebug = this.AutoStartDebug;
             clone.CatchSystemErrors = this.CatchSystemErrors;
-
-            // Shallow copy
-            clone.BreakExecPath = new List<ExecutionPath>(this.BreakExecPath);
 
             clone.ColorOutput = this.ColorOutput;
             clone.ResultCode = this.ResultCode;

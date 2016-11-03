@@ -17,8 +17,10 @@ using Microsoft.VisualStudio.TestPlatform.ObjectModel.Adapter;
 using Microsoft.VisualStudio.TestPlatform.ObjectModel.Logging;
 using BoostTestAdapter.Utility;
 using BoostTestAdapter.Utility.VisualStudio;
+using System.Runtime.InteropServices;
 using VSTestCase = Microsoft.VisualStudio.TestPlatform.ObjectModel.TestCase;
 using VSTestResult = Microsoft.VisualStudio.TestPlatform.ObjectModel.TestResult;
+using BoostTestAdapter.Utility.ExecutionContext;
 
 namespace BoostTestAdapter
 {
@@ -55,9 +57,12 @@ namespace BoostTestAdapter
         /// Default constructor
         /// </summary>
         public BoostTestExecutor()
-            : this(new DefaultBoostTestRunnerFactory(),
-            new BoostTestDiscovererFactory(new ListContentHelper()))
         {
+            _testRunnerFactory = new DefaultBoostTestRunnerFactory();
+            _boostTestDiscovererFactory = new BoostTestDiscovererFactory(_testRunnerFactory);
+            _vsProvider = new DefaultVisualStudioInstanceProvider();
+
+            _cancelled = false;
         }
 
         /// <summary>
@@ -65,27 +70,41 @@ namespace BoostTestAdapter
         /// </summary>
         /// <param name="testRunnerFactory">The IBoostTestRunnerFactory which is to be used</param>
         /// <param name="boostTestDiscovererFactory">The IBoostTestDiscovererFactory which is to be used</param>
-        public BoostTestExecutor(IBoostTestRunnerFactory testRunnerFactory, IBoostTestDiscovererFactory boostTestDiscovererFactory)
+        /// <param name="provider">The Visual Studio instance provider</param>
+        public BoostTestExecutor(IBoostTestRunnerFactory testRunnerFactory, IBoostTestDiscovererFactory boostTestDiscovererFactory, IVisualStudioInstanceProvider provider)
         {
             _testRunnerFactory = testRunnerFactory;
             _boostTestDiscovererFactory = boostTestDiscovererFactory;
+            _vsProvider = provider;
 
             _cancelled = false;
         }
 
         #endregion Constructors
-
-
+        
         #region Member variables
 
+        /// <summary>
+        /// Cancel flag
+        /// </summary>
         private volatile bool _cancelled;
+
+        /// <summary>
+        /// Boost Test Discoverer Factory - provisions test discoverers
+        /// </summary>
         private readonly IBoostTestDiscovererFactory _boostTestDiscovererFactory;
+
+        /// <summary>
+        /// Boost Test Runner Factory - provisions test runners
+        /// </summary>
         private readonly IBoostTestRunnerFactory _testRunnerFactory;
 
-        #endregion Member variables
-
-        
         /// <summary>
+        /// The Visual Studio instance provider
+        /// </summary>
+        private readonly IVisualStudioInstanceProvider _vsProvider;
+
+        #endregion Member variables
         
         /// <summary>
         /// Initialization routine for running tests
@@ -109,6 +128,35 @@ namespace BoostTestAdapter
             Logger.Shutdown();
         }
 
+        /// <summary>
+        /// Filters out any tests which are not intended to run
+        /// </summary>
+        /// <param name="settings">Adapter settings which determines test filtering</param>
+        /// <param name="tests">The entire test corpus</param>
+        /// <returns>A test corpus which contains only the test which are intended to run</returns>
+        private static IEnumerable<TestCase> GetTestsToRun(BoostTestAdapterSettings settings, IEnumerable<TestCase> tests)
+        {
+            IEnumerable<TestCase> testsToRun = tests;
+
+            if (!settings.RunDisabledTests)
+            {
+                testsToRun = tests.Where((test) =>
+                {
+                    foreach (var trait in test.Traits)
+                    {
+                        if ((trait.Name == VSTestModel.StatusTrait) && (trait.Value == VSTestModel.TestEnabled))
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                });
+            }
+
+            return testsToRun;
+        }
+
         #region ITestExecutor
 
         /// <summary>
@@ -127,6 +175,9 @@ namespace BoostTestAdapter
             Code.Require(frameworkHandle, "frameworkHandle");
 
             SetUp(frameworkHandle);
+
+            Logger.Debug("IRunContext.IsDataCollectionEnabled: {0}", runContext.IsDataCollectionEnabled);
+            Logger.Debug("IRunContext.RunSettings.SettingsXml: {0}", runContext.RunSettings.SettingsXml);
 
             BoostTestAdapterSettings settings = BoostTestAdapterSettingsProvider.GetSettings(runContext);
 
@@ -150,7 +201,11 @@ namespace BoostTestAdapter
                         // Re-discover tests so that we could make use of the RunTests overload which takes an enumeration of test cases.
                         // This is necessary since we need to run tests one by one in order to have the test adapter remain responsive
                         // and have a list of tests over which we can generate test results for.
-                        discoverer.DiscoverTests(new[] { source }, runContext, frameworkHandle, sink);
+                        discoverer.DiscoverTests(new[] { source }, runContext, sink);
+                        
+                        //The following ensures that only test cases that are not disabled are run when the user presses "Run all"
+                        //This, however, can be overwritten by the .runsettings file supplied
+                        IEnumerable<TestCase> testsToRun = GetTestsToRun(settings, sink.Tests);
 
                         // Batch tests into grouped runs based by source so that we avoid reloading symbols per test run
                         // Batching by source since this overload is called when 'Run All...' or equivalent is triggered
@@ -164,7 +219,7 @@ namespace BoostTestAdapter
                             continue;
                         }
 
-                        IEnumerable<TestRun> batches = batchStrategy.BatchTests(sink.Tests);
+                        IEnumerable<TestRun> batches = batchStrategy.BatchTests(testsToRun);
 
                         // Delegate to the RunBoostTests overload which takes an enumeration of test batches
                         RunBoostTests(batches, runContext, frameworkHandle);
@@ -194,6 +249,9 @@ namespace BoostTestAdapter
 
             SetUp(frameworkHandle);
 
+            Logger.Debug("IRunContext.IsDataCollectionEnabled: {0}", runContext.IsDataCollectionEnabled);
+            Logger.Debug("IRunContext.RunSettings.SettingsXml: {0}", runContext.RunSettings.SettingsXml);
+
             BoostTestAdapterSettings settings = BoostTestAdapterSettingsProvider.GetSettings(runContext);
 
             // Batch tests into grouped runs based on test source and test suite so that we minimize symbol reloading
@@ -216,7 +274,8 @@ namespace BoostTestAdapter
             }
             else
             {
-                IEnumerable<TestRun> batches = batchStrategy.BatchTests(tests);
+                // NOTE Apply distinct to avoid duplicate test cases. Common issue when using BOOST_DATA_TEST_CASE.
+                IEnumerable<TestRun> batches = batchStrategy.BatchTests(tests.Distinct(new TestCaseComparer()));
                 RunBoostTests(batches, runContext, frameworkHandle);
             }
 
@@ -286,15 +345,25 @@ namespace BoostTestAdapter
                 {
                     Logger.Info("{0}:   -> [{1}]", ((runContext.IsBeingDebugged) ? "Debugging" : "Executing"), string.Join(", ", batch.Tests));
 
-                    CleanOutput(batch.Arguments);
-
-                    // Execute the tests
-                    if (ExecuteTests(batch, runContext, frameworkHandle))
+                    using (TemporaryFile report = new TemporaryFile(batch.Arguments.ReportFile))
+                    using (TemporaryFile log    = new TemporaryFile(batch.Arguments.LogFile))
+                    using (TemporaryFile stdout = new TemporaryFile(batch.Arguments.StandardOutFile))
+                    using (TemporaryFile stderr = new TemporaryFile(batch.Arguments.StandardErrorFile))
                     {
-                        foreach (VSTestResult result in GenerateTestResults(batch, start, settings))
+                        Logger.Debug("Working directory: {0}", batch.Arguments.WorkingDirectory ?? "(null)");
+                        Logger.Debug("Report file      : {0}", batch.Arguments.ReportFile);
+                        Logger.Debug("Log file         : {0}", batch.Arguments.LogFile);
+                        Logger.Debug("StdOut file      : {0}", batch.Arguments.StandardOutFile ?? "(null)");
+                        Logger.Debug("StdErr file      : {0}", batch.Arguments.StandardErrorFile ?? "(null)");
+
+                        // Execute the tests
+                        if (ExecuteTests(batch, runContext, frameworkHandle))
                         {
-                            // Identify test result to Visual Studio Test framework
-                            frameworkHandle.RecordResult(result);
+                            foreach (VSTestResult result in GenerateTestResults(batch, start, settings))
+                            {
+                                // Identify test result to Visual Studio Test framework
+                                frameworkHandle.RecordResult(result);
+                            }
                         }
                     }
                 }
@@ -310,39 +379,11 @@ namespace BoostTestAdapter
                 }
                 catch (Exception ex)
                 {
-                    Logger.Error("Exception caught while running test batch {0} [{1}] ({2})", batch.Source, string.Join(", ", batch.Tests), ex.Message);
+                    Logger.Exception(ex, "Exception caught while running test batch {0} [{1}] ({2})", batch.Source, string.Join(", ", batch.Tests), ex.Message);
                 }
             }
         }
-
-        /// <summary>
-        /// Delete output files.
-        /// </summary>
-        /// <param name="args">The BoostTestRunnerCommandLineArgs which contains references to output files.</param>
-        private static void CleanOutput(BoostTestRunnerCommandLineArgs args)
-        {
-            DeleteFile(args.LogFile);
-            DeleteFile(args.ReportFile);
-            DeleteFile(args.StandardOutFile);
-            DeleteFile(args.StandardErrorFile);
-        }
-
-        /// <summary>
-        /// Checks to see if the file is available and deletes it.
-        /// </summary>
-        /// <param name="file">The file to delete.</param>
-        /// <returns>true if the file is deleted; false otherwise.</returns>
-        private static bool DeleteFile(string file)
-        {
-            if (!string.IsNullOrEmpty(file) && File.Exists(file))
-            {
-                File.Delete(file);
-                return true;
-            }
-
-            return false;
-        }
-
+        
         /// <summary>
         /// Executes the provided test batch
         /// </summary>
@@ -354,13 +395,9 @@ namespace BoostTestAdapter
         {
             if (run.Runner != null)
             {
-                if (runContext.IsBeingDebugged)
-                {
-                    run.Debug(frameworkHandle);
-                }
-                else
-                {
-                    run.Run();
+                using (var context = CreateExecutionContext(runContext, frameworkHandle))
+                { 
+                    run.Execute(context);
                 }
             }
             else
@@ -369,6 +406,24 @@ namespace BoostTestAdapter
             }
 
             return run.Runner != null;
+        }
+        
+        /// <summary>
+        /// Retrieves and assigns parameters by resolving configurations from different possible resources
+        /// </summary>
+        /// <param name="source">The TestCases source</param>
+        /// <param name="settings">The Boost Test adapter settings currently in use</param>
+        /// <returns>A string for the default working directory</returns>
+        private void GetDebugConfigurationProperties(string source, BoostTestAdapterSettings settings, BoostTestRunnerCommandLineArgs args)
+        {
+            try
+            {
+                args.SetWorkingEnvironment(source, settings, ((_vsProvider == null) ? null : _vsProvider.Instance));
+            }
+            catch (COMException ex)
+            {
+                Logger.Exception(ex, "Could not retrieve WorkingDirectory from Visual Studio Configuration-{0}", ex.Message);
+            }
         }
 
         /// <summary>
@@ -381,25 +436,23 @@ namespace BoostTestAdapter
         {
             BoostTestRunnerCommandLineArgs args = settings.CommandLineArgs.Clone();
 
-            args.WorkingDirectory = Path.GetDirectoryName(source);
-
-            string filename = Path.GetFileName(source);
-
+            GetDebugConfigurationProperties(source, settings, args);
+            
             // Specify log and report file information
             args.LogFormat = OutputFormat.XML;
             args.LogLevel = settings.LogLevel;
-            args.LogFile = SanitizeFileName(filename + FileExtensions.LogFile);
+            args.LogFile = TestPathGenerator.Generate(source, FileExtensions.LogFile);
 
             args.ReportFormat = OutputFormat.XML;
             args.ReportLevel = ReportLevel.Detailed;
-            args.ReportFile = SanitizeFileName(filename + FileExtensions.ReportFile);
-
-            args.StandardOutFile = SanitizeFileName(filename + FileExtensions.StdOutFile);
-            args.StandardErrorFile = SanitizeFileName(filename + FileExtensions.StdErrFile);
+            args.ReportFile = TestPathGenerator.Generate(source, FileExtensions.ReportFile);
+            
+            args.StandardOutFile = ((settings.EnableStdOutRedirection) ? TestPathGenerator.Generate(source, FileExtensions.StdOutFile) : null);
+            args.StandardErrorFile = ((settings.EnableStdErrRedirection) ? TestPathGenerator.Generate(source, FileExtensions.StdErrFile) : null);
 
             return args;
         }
-
+        
         /// <summary>
         /// Factory function which returns an appropriate BoostTestRunnerCommandLineArgs structure for batched test runs
         /// </summary>
@@ -418,16 +471,6 @@ namespace BoostTestAdapter
             args.DetectMemoryLeaks = 0;
 
             return args;
-        }
-
-        /// <summary>
-        /// Sanitizes a file name suitable for Boost Test command line argument values
-        /// </summary>
-        /// <param name="file">The filename to sanitize.</param>
-        /// <returns>The sanitized filename.</returns>
-        private static string SanitizeFileName(string file)
-        {
-            return file.Replace(' ', '_');
         }
 
         /// <summary>
@@ -460,16 +503,33 @@ namespace BoostTestAdapter
             }
             catch (XmlException)
             {
-                string text = File.ReadAllText(testRun.Arguments.ReportFile);
+                string text = ((File.Exists(testRun.Arguments.ReportFile)) ? File.ReadAllText(testRun.Arguments.ReportFile) : string.Empty);
 
-                if (text.Trim() == TestNotFound)
+                if (text.Trim().StartsWith(TestNotFound, StringComparison.Ordinal))
                 {
                     return testRun.Tests.Select(GenerateNotFoundResult);
                 }
                 else
                 {
-                    // Re-throw the exception
-                    throw;
+                    // Represent result parsing exception as a test fatal error
+                    if (string.IsNullOrEmpty(text))
+                    {
+                        text = "Boost Test result file was not found or is empty.";
+                    }
+                    
+                    return testRun.Tests.Select(test => {
+                        Boost.Results.TestResult exception = new Boost.Results.TestResult(results);
+                        
+                        exception.Unit = Boost.Test.TestUnit.FromFullyQualifiedName(test.FullyQualifiedName);
+
+                        // NOTE Divide by 10 to compensate for duration calculation described in VSTestResult.AsVSTestResult(this Boost.Results.TestResult, VSTestCase)
+                        exception.Duration = ((ulong)(end - start).Ticks) / 10;
+
+                        exception.Result = TestResultType.Failed;
+                        exception.LogEntries.Add(new Boost.Results.LogEntryTypes.LogEntryFatalError(text));
+
+                        return GenerateResult(test, exception, start, end);
+                    });
                 }
             }
 
@@ -478,20 +538,22 @@ namespace BoostTestAdapter
                 {
                     // Locate the test result associated to the current test
                     Boost.Results.TestResult result = results[test.FullyQualifiedName];
-
-                    if (result != null)
-                    {
-                        // Convert the Boost.Test.Result data structure into an equivalent Visual Studio model
-                        VSTestResult vsResult = result.AsVSTestResult(test);
-                        vsResult.StartTime = start;
-                        vsResult.EndTime = end;
-
-                        return vsResult;
-                    }
-
-                    return null;
+                    return (result == null) ? null : GenerateResult(test, result, start, end);
                 }).
                 Where(result => (result != null));
+        }
+
+        private static VSTestResult GenerateResult(VSTestCase test, Boost.Results.TestResult result, DateTimeOffset start, DateTimeOffset end)
+        {
+            Code.Require(test, "test");
+            Code.Require(result, "result");
+
+            // Convert the Boost.Test.Result data structure into an equivalent Visual Studio model
+            VSTestResult vsResult = result.AsVSTestResult(test);
+            vsResult.StartTime = start;
+            vsResult.EndTime = end;
+
+            return vsResult;
         }
 
         /// <summary>
@@ -552,6 +614,24 @@ namespace BoostTestAdapter
             }
 
             return TestNotFound;
+        }
+
+        /// <summary>
+        /// Generates an execution context. Debug executions are handled via Visual Studio's
+        /// debug mechanisms and regular executions guarantee managed sub-processes
+        /// (i.e. sub-processes are implicitly killed when parent is killed).
+        /// </summary>
+        /// <param name="context">The test execution run context</param>
+        /// <param name="framework">IFrameworkHandle possessing debug capabilities</param>
+        /// <returns>An IProcessExecutionContext capable of spawning sub-processes</returns>
+        private static IProcessExecutionContext CreateExecutionContext(IRunContext context, IFrameworkHandle framework)
+        {
+            if ((context != null) && (context.IsBeingDebugged) && (framework != null))
+            {
+                return new DebugFrameworkExecutionContext(framework);
+            }
+
+            return new DefaultProcessExecutionContext();
         }
 
         #endregion Helper methods

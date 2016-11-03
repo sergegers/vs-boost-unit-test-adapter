@@ -4,157 +4,154 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 
 using System;
+using System.IO;
 using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
+using System.Runtime.InteropServices;
+
 using BoostTestAdapter.Settings;
 using BoostTestAdapter.Utility;
+
+using BoostTestAdapter.Boost.Runner;
+using BoostTestAdapter.Boost.Test;
+
+using BoostTestAdapter.Utility.VisualStudio;
+
 using Microsoft.VisualStudio.TestPlatform.ObjectModel.Adapter;
-using Microsoft.VisualStudio.TestPlatform.ObjectModel.Logging;
+using BoostTestAdapter.Utility.ExecutionContext;
 
 namespace BoostTestAdapter.Discoverers
 {
     /// <summary>
-    /// A Boost Test Discoverer that uses the output of the source executable called with --list_content parameter 
-    /// to get the list of the tests. 
-    /// It also uses DbgHelperNative to complete the definition of each test with file name and line number.
+    /// A Boost Test Discoverer that uses the output of the source executable called with --list_content=DOT parameter 
+    /// to get the list of the tests.
     /// </summary>
     internal class ListContentDiscoverer : IBoostTestDiscoverer
     {
         #region Constructors
 
         /// <summary>
-        /// Default constructor. A default implementation of IListContentHelper is provided.
+        /// Default constructor. A default implementation of IBoostTestRunnerFactory is provided.
         /// </summary>
         public ListContentDiscoverer()
-            : this(new ListContentHelper())
+            : this(new DefaultBoostTestRunnerFactory(), new DefaultVisualStudioInstanceProvider())
         {
-
         }
 
         /// <summary>
         /// Constructor.
         /// </summary>
-        /// <param name="listContentHelper">A custom implementation of IListContentHelper.</param>
-        public ListContentDiscoverer(IListContentHelper listContentHelper)
+        /// <param name="factory">A custom implementation of IBoostTestRunnerFactory.</param>
+        /// <param name="vsProvider">Visual Studio Instance Provider</param>
+        public ListContentDiscoverer(IBoostTestRunnerFactory factory, IVisualStudioInstanceProvider vsProvider)
         {
-            _listContentHelper = listContentHelper;
+            _factory = factory;
+            _vsProvider = vsProvider;
         }
 
         #endregion
 
-
         #region Members
 
-        private readonly IListContentHelper _listContentHelper;
+        private readonly IBoostTestRunnerFactory _factory;
+        private readonly IVisualStudioInstanceProvider _vsProvider;
 
         #endregion
 
-
         #region IBoostTestDiscoverer
 
-        public void DiscoverTests(IEnumerable<string> sources, IDiscoveryContext discoveryContext, IMessageLogger logger, ITestCaseDiscoverySink discoverySink)
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Maintainability", "CA1506:AvoidExcessiveClassCoupling")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes")]
+        public void DiscoverTests(IEnumerable<string> sources, IDiscoveryContext discoveryContext, ITestCaseDiscoverySink discoverySink)
         {
             Code.Require(sources, "sources");
             Code.Require(discoverySink, "discoverySink");
 
-            BoostTestAdapterSettings settings = BoostTestAdapterSettingsProvider.GetSettings(discoveryContext);
-            _listContentHelper.Timeout = settings.DiscoveryTimeoutMilliseconds;
+            // Populate loop-invariant attributes and settings
 
+            BoostTestAdapterSettings settings = BoostTestAdapterSettingsProvider.GetSettings(discoveryContext);
+
+            BoostTestRunnerFactoryOptions options = new BoostTestRunnerFactoryOptions()
+            {
+                ExternalTestRunnerSettings = settings.ExternalTestRunner
+            };
+
+            BoostTestRunnerSettings runnerSettings = new BoostTestRunnerSettings()
+            {
+                Timeout = settings.DiscoveryTimeoutMilliseconds
+            };
+
+            BoostTestRunnerCommandLineArgs args = new BoostTestRunnerCommandLineArgs()
+            {
+                ListContent = ListContentFormat.DOT
+            };
+            
             foreach (var source in sources)
             {
-                var output = _listContentHelper.GetListContentOutput(source);
-
-                using (var dbgHelp = _listContentHelper.CreateDebugHelper(source))
+                try
                 {
-                    QualifiedNameBuilder suiteNameBuilder = new QualifiedNameBuilder();
-                    suiteNameBuilder.Push(QualifiedNameBuilder.DefaultMasterTestSuiteName);
+                    args.SetWorkingEnvironment(source, settings, ((_vsProvider == null) ? null : _vsProvider.Instance));
+                }
+                catch (COMException ex)
+                {
+                    Logger.Exception(ex, "Could not retrieve WorkingDirectory from Visual Studio Configuration");
+                }
 
-                    var previousLineIndentation = -1;
-                    var lines = output.Split(Environment.NewLine.ToCharArray(), StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var l in lines)
+                try
+                {
+                    IBoostTestRunner runner = _factory.GetRunner(source, options);
+                    using (TemporaryFile output = new TemporaryFile(TestPathGenerator.Generate(source, ".list.content.gv")))
                     {
-                        var unitName = l.Trim();
-                        if (unitName.EndsWith("*", StringComparison.Ordinal))
-                            unitName = unitName.Substring(0, unitName.Length - 1);
+                        // --list_content output is redirected to standard error
+                        args.StandardErrorFile = output.Path;
+                        Logger.Debug("list_content file: {0}", args.StandardErrorFile);
 
-                        var currentLineIndentation = l.TrimEnd().LastIndexOf(' ') + 1;
-                        
-                        // pop levels from the name builder to reach the current one
-                        while (currentLineIndentation <= previousLineIndentation)
-                        {
-                            suiteNameBuilder.Pop();
-                            previousLineIndentation -= 4;
+                        using (var context = new DefaultProcessExecutionContext())
+                        { 
+                            runner.Execute(args, runnerSettings, context);
                         }
 
-                        // Retrieve all the symbols that contains <unitname> in their name.
-                        // If no symbols can be retrieved, we skip the current unitName because 
-                        // we cannot assume what kind of unit (test or suit) it is.
-                        IEnumerable<SymbolInfo> syms;
-                        if (!dbgHelp.LookupSymbol(unitName, out syms))
-                            continue;
-
-                        // Check if the unit is a Test or a Suite.
-                        var testSymbol = GetTestSymbol(suiteNameBuilder, unitName, syms);
-                        if (testSymbol == null)
+                        // Parse --list_content=DOT output
+                        using (FileStream stream = File.OpenRead(args.StandardErrorFile))
                         {
-                            // Suite
-                            suiteNameBuilder.Push(unitName);
+                            TestFrameworkDOTDeserialiser deserialiser = new TestFrameworkDOTDeserialiser(source);
 
-                            previousLineIndentation = currentLineIndentation;
-                        }
-                        else
-                        {
-                            // Test
-                            var isEnabled = l.Contains("*");
-                            var testCase = TestCaseUtils.CreateTestCase(
-                                source,
-                                new SourceFileInfo(testSymbol.FileName, testSymbol.LineNumber),
-                                suiteNameBuilder,
-                                unitName,
-                                isEnabled);
-                            TestCaseUtils.AddTestCase(testCase, discoverySink);
+                            // Pass in a visitor to avoid a 2-pass loop in order to notify test cases to VS
+                            //
+                            // NOTE Due to deserialisation, make sure that only test cases are visited. Test
+                            //      suites may be visited after their child test cases are visited.
+                            deserialiser.Deserialise(stream, new VSDiscoveryVisitorTestsOnly(source, discoverySink));
                         }
                     }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Exception(ex, "Exception caught while discovering tests for {0} ({1} - {2})", source, ex.Message, ex.HResult);
                 }
             }
         }
 
+        #endregion IBoostTestDiscoverer
+        
         /// <summary>
-        /// Searches in a list of SymbolInfo the one that identifies a Test.
+        /// A specification of VSDiscoveryVisitor which limits visitation to tests only.
+        /// Allows for optimal visitation during DOT deserialisation.
         /// </summary>
-        /// <param name="suiteNameBuilder">Qualified name builder.</param>
-        /// <param name="unitName">The name of the unit to be searched.</param>
-        /// <param name="syms">The list of the symbols.</param>
-        /// <returns>A SymbolInfo if <paramref name="unitName"/> is a test method.</returns>
-        private static SymbolInfo GetTestSymbol(QualifiedNameBuilder suiteNameBuilder, string unitName, IEnumerable<SymbolInfo> syms)
+        private class VSDiscoveryVisitorTestsOnly : VSDiscoveryVisitor
         {
-            try
+            public VSDiscoveryVisitorTestsOnly(string source, ITestCaseDiscoverySink sink)
+                : base(source, sink)
             {
-                var fullyQualifiedName = unitName;
-                
-                if (!string.IsNullOrEmpty(suiteNameBuilder.ToString()))
-                    fullyQualifiedName = string.Format(
-                        CultureInfo.InvariantCulture,
-                        "{0}::{1}",
-                        suiteNameBuilder.ToString().Replace("/", "::"),
-                        unitName
-                    );
-
-                var symbolName = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}::test_method",
-                    fullyQualifiedName
-                );
-
-                return syms.FirstOrDefault(s => s.Name == symbolName);
             }
-            catch (Exception)
+
+            protected override bool ShouldVisit(TestSuite suite)
             {
-                throw;
+                return false;
+            }
+
+            protected override bool ShouldVisit(TestCase test)
+            {
+                return true;
             }
         }
-
-        #endregion
     }
 }

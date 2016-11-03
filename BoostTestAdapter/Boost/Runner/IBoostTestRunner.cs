@@ -3,7 +3,7 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 
-using Microsoft.VisualStudio.TestPlatform.ObjectModel.Adapter;
+using BoostTestAdapter.Utility.ExecutionContext;
 
 namespace BoostTestAdapter.Boost.Runner
 {
@@ -13,25 +13,22 @@ namespace BoostTestAdapter.Boost.Runner
     public interface IBoostTestRunner
     {
         /// <summary>
-        /// Initializes a debug instance of this Boost Test runner.
+        /// Executes the Boost Test runner with the provided arguments within the provided execution context.
         /// </summary>
         /// <param name="args">The Boost Test framework command line options.</param>
         /// <param name="settings">The Boost Test runner settings.</param>
-        /// <param name="framework">An IFrameworkHandle which provides debugging capabilities.</param>
+        /// <param name="executionContext">An IProcessExecutionContext which will manage any spawned process.</param>
         /// <exception cref="TimeoutException">Thrown in case specified timeout threshold is exceeded.</exception>
-        void Debug(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings, IFrameworkHandle framework);
-
-        /// <summary>
-        /// Executes the Boost Test runner with the provided arguments.
-        /// </summary>
-        /// <param name="args">The Boost Test framework command line options.</param>
-        /// <param name="settings">The Boost Test runner settings.</param>
-        /// <exception cref="TimeoutException">Thrown in case specified timeout threshold is exceeded.</exception>
-        void Run(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings);
-
+        void Execute(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings, IProcessExecutionContext executionContext);
+        
         /// <summary>
         /// Provides a source Id distinguishing different instances
         /// </summary>
         string Source { get; }
+
+        /// <summary>
+        /// Determines if the test runner provides --list_content capabilities.
+        /// </summary>
+        bool ListContentSupported { get; }
     }
 }

@@ -4,31 +4,17 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 
 using System;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace BoostTestAdapter.Utility
 {
     /// <summary>
-    /// Simplified representation of a PDB symbol. 
-    /// </summary>
-    public class SymbolInfo
-    {
-        public string FileName { get; set; }
-        public int LineNumber { get; set; }
-        public string Name { get; set; }
-        public ulong Address { get; set; }
-    }
-
-    /// <summary>
     /// Wrapper class around the DbgHelp library.
     /// It exposes only the functionalities relevant to BUTA.
     /// </summary>
-    public sealed class DebugHelper : IDebugHelper
+    public sealed class DebugHelper : IDisposable
     {
         private static class NativeMethods
         {
@@ -54,17 +40,7 @@ namespace BoostTestAdapter.Utility
                 [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 1024)]
                 public string Name;               // Buffer
             }
-
-            [StructLayout(LayoutKind.Sequential)]
-            internal struct IMAGEHLP_LINE64
-            {
-                public uint SizeOfStruct;             // set to sizeof(IMAGEHLP_LINE64)
-                public IntPtr Key;                    // internal
-                public uint LineNumber;               // line number in file
-                public IntPtr FileName;               // full filename
-                public ulong Address;                 // first instruction of line
-            };
-
+            
             [Flags]
             internal enum SymLoadModuleFlags : uint
             {
@@ -145,6 +121,9 @@ namespace BoostTestAdapter.Utility
             internal static extern SetErrorFlags SetErrorMode(SetErrorFlags flags);
 
             [DllImport("DbgHelp.dll", SetLastError = true)]
+            internal static extern Options SymGetOptions();
+
+            [DllImport("DbgHelp.dll", SetLastError = true)]
             internal static extern uint SymSetOptions(Options options);
 
             [DllImport("DbgHelp.dll", CharSet = CharSet.Ansi, SetLastError = true, BestFitMapping = false, ThrowOnUnmappableChar = true)]
@@ -162,136 +141,34 @@ namespace BoostTestAdapter.Utility
             [return: MarshalAs(UnmanagedType.Bool)]
             public extern static bool SymUnloadModule64(IntPtr hProcess, ulong baseOfDll);
 
-            [DllImport("DbgHelp.dll", SetLastError = true)]
+            [DllImport("DbgHelp.dll", CharSet = CharSet.Ansi, SetLastError = true, BestFitMapping = false, ThrowOnUnmappableChar = true)]
             [return: MarshalAs(UnmanagedType.Bool)]
-            internal static extern bool SymGetLineFromAddr64(IntPtr handle, ulong address, out uint displacement, ref IMAGEHLP_LINE64 line);
-
-            public delegate bool SymEnumSymbolsProc(ref SYMBOL_INFO symInfo, uint symbolSize, IntPtr contextZero);
-
-            [DllImport("DbgHelp", CharSet = CharSet.Ansi, SetLastError = true, BestFitMapping = false, ThrowOnUnmappableChar = true)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public extern static bool SymEnumSymbols(IntPtr hProcess, ulong baseOfDll, string mask, SymEnumSymbolsProc callback, IntPtr contextZero);
+            public extern static bool SymFromName(IntPtr hProcess, string SymName, ref SYMBOL_INFO symInfo);
 
             #endregion
 
-            public enum DebugAction : uint
-            {
-                /// <summary>
-                /// Display verbose information.
-                /// </summary>
-                /// <remarks>The CallbackData parameter is a pointer to a string.</remarks>
-                CBA_DEBUG_INFO = 0x10000000,
-
-                /// <summary>
-                /// Deferred symbol loading has started. To cancel the symbol load, return TRUE.
-                /// </summary>
-                /// <remarks>The CallbackData parameter is a pointer to a IMAGEHLP_DEFERRED_SYMBOL_LOAD64 structure.</remarks>
-                CBA_DEFERRED_SYMBOL_LOAD_CANCEL = 0x00000007,
-
-                /// <summary>
-                /// Deferred symbol load has completed.
-                /// </summary>
-                /// <remarks>The CallbackData parameter is a pointer to a IMAGEHLP_DEFERRED_SYMBOL_LOAD64 structure.</remarks>
-                CBA_DEFERRED_SYMBOL_LOAD_COMPLETE = 0x00000002,
-
-                /// <summary>
-                /// Deferred symbol load has failed.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a IMAGEHLP_DEFERRED_SYMBOL_LOAD64 structure. The symbol handler will attempt to load the symbols again if the callback function sets the FileName member of this structure.
-                /// </remarks>
-                CBA_DEFERRED_SYMBOL_LOAD_FAILURE = 0x00000003,
-
-                /// <summary>
-                /// Deferred symbol load has partially completed. The symbol loader is unable to read the image header from either the image file or the specified module.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a IMAGEHLP_DEFERRED_SYMBOL_LOAD64 structure. The symbol handler will attempt to load the symbols again if the callback function sets the FileName member of this structure.
-                /// DbgHelp 5.1:  This value is not supported.
-                /// </remarks>
-                CBA_DEFERRED_SYMBOL_LOAD_PARTIAL = 0x00000020,
-
-                /// <summary>
-                /// Deferred symbol load has started.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a IMAGEHLP_DEFERRED_SYMBOL_LOAD64 structure.
-                /// </remarks>
-                CBA_DEFERRED_SYMBOL_LOAD_START = 0x00000001,
-
-                /// <summary>
-                /// Duplicate symbols were found. This reason is used only in COFF or CodeView format.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a IMAGEHLP_DUPLICATE_SYMBOL64 structure. To specify which symbol to use, set the SelectedSymbol member of this structure.
-                /// </remarks>
-                CBA_DUPLICATE_SYMBOL = 0x00000005,
-
-                /// <summary>
-                /// Display verbose information. If you do not handle this event, the information is resent through the CBA_DEBUG_INFO event.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a IMAGEHLP_CBA_EVENT structure. 
-                /// </remarks>
-                CBA_EVENT = 0x00000010,
-
-                /// <summary>
-                /// The loaded image has been read.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a IMAGEHLP_CBA_READ_MEMORY structure. The callback function should read the number of bytes specified by the bytes member into the buffer specified by the buf member, and update the bytesread member accordingly.
-                /// </remarks>
-                CBA_READ_MEMORY = 0x00000006,
-
-                /// <summary>
-                /// Symbol options have been updated. To retrieve the current options, call the SymGetOptions function.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter should be ignored.
-                /// </remarks>
-                CBA_SET_OPTIONS = 0x00000008,
-
-                /// <summary>
-                /// Display verbose information for source server. If you do not handle this event, the information is resent through the CBA_DEBUG_INFO event.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a IMAGEHLP_CBA_EVENT structure.
-                /// DbgHelp 6.6 and earlier:  This value is not supported.
-                /// </remarks>
-                CBA_SRCSRV_EVENT = 0x40000000,
-
-                /// <summary>
-                /// Display verbose information for source server.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter is a pointer to a string.
-                /// DbgHelp 6.6 and earlier:  This value is not supported.
-                /// </remarks>
-                CBA_SRCSRV_INFO = 0x20000000,
-
-                /// <summary>
-                /// Symbols have been unloaded.
-                /// </summary>
-                /// <remarks>
-                /// The CallbackData parameter should be ignored.
-                /// </remarks>
-                CBA_SYMBOLS_UNLOADED = 0x00000004,
-            }
         }
 
         private IntPtr _libHandle;
         private ulong _dllBase;
-        private List<SymbolInfo> _symbolCache;
 
         public string LastErrorMessage { get; private set; }
 
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        /// <param name="exeName">The executable name</param>
+        /// <exception cref="Win32Exception"></exception>
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA1806:DoNotIgnoreMethodResults", MessageId = "BoostTestAdapter.Utility.DebugHelper+NativeMethods.SymSetOptions(BoostTestAdapter.Utility.DebugHelper+NativeMethods+Options)")]
         public DebugHelper(string exeName)
         {
             IntPtr handle = Process.GetCurrentProcess().Handle;
             NativeMethods.SetErrorMode(NativeMethods.SetErrorFlags.SEM_FAILCRITICALERRORS | NativeMethods.SetErrorFlags.SEM_NOOPENFILEERRORBOX);
 
-            NativeMethods.SymSetOptions(NativeMethods.Options.SYMOPT_DEFERRED_LOADS | NativeMethods.Options.SYMOPT_DEBUG);
+            NativeMethods.Options options = NativeMethods.SymGetOptions();
+            options |= NativeMethods.Options.SYMOPT_DEFERRED_LOADS;
+            options |= NativeMethods.Options.SYMOPT_DEBUG;
+            NativeMethods.SymSetOptions(options);
 
             if (!NativeMethods.SymInitialize(handle, null, false))
             {
@@ -307,12 +184,16 @@ namespace BoostTestAdapter.Utility
                 0,
                 IntPtr.Zero,
                 NativeMethods.SymLoadModuleFlags.SLMFLAG_NONE);
+
             if (_dllBase == 0)
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
+
             _libHandle = handle;
         }
+
+        #region IDisposable
 
         ~DebugHelper()
         {
@@ -320,13 +201,14 @@ namespace BoostTestAdapter.Utility
         }
 
         private bool _disposed = false;
+
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA1801:ReviewUnusedParameters", MessageId = "disposing")]
         private void Dispose(bool disposing)
         {
             if (_disposed)
                 return;
 
-            if (_libHandle.ToInt64() == 0)
+            if (_libHandle == IntPtr.Zero)
                 return;
 
             NativeMethods.SymUnloadModule64(_libHandle, _dllBase);
@@ -343,99 +225,21 @@ namespace BoostTestAdapter.Utility
             GC.SuppressFinalize(this);
         }
 
-        private bool EnumerateAllSymbols()
+        #endregion IDisposable
+
+        /// <summary>
+        /// Determines whether or not a symbol with the <b>exact</b> provided name is available.
+        /// </summary>
+        /// <param name="name">The name of the symbol to search for.</param>
+        /// <returns>true if the symbol is available; false otherwise.</returns>
+        public bool ContainsSymbol(string name)
         {
-            if (_symbolCache == null)
-                _symbolCache = new List<SymbolInfo>();
-            var ret = NativeMethods.SymEnumSymbols(_libHandle, _dllBase, "*", EnumSymbolsCallback, IntPtr.Zero);
-            if (!ret)
-            {
-                var ex = new Win32Exception(Marshal.GetLastWin32Error());
-                Trace.TraceError(ex.Message);
-            }
-            return ret;
-        }
+            Code.Require(name, "name");
 
-        private bool EnumSymbolsCallback(ref NativeMethods.SYMBOL_INFO symInfo, uint symbolSize, IntPtr contextZero)
-        {
-            var si = new SymbolInfo()
-            {
-                Address = symInfo.Address,
-                FileName = "",
-                LineNumber = 0,
-                Name = symInfo.Name
-            };
-
-            // get the line
-            NativeMethods.IMAGEHLP_LINE64 line = new NativeMethods.IMAGEHLP_LINE64();
-            line.SizeOfStruct = (uint)Marshal.SizeOf(line);
-
-            ulong addr = si.Address;
-            uint disp32;
-            if (NativeMethods.SymGetLineFromAddr64(_libHandle, addr, out disp32, ref line))
-            {
-                StringBuilder fn = new StringBuilder(128);
-                for (int i = 0; ; ++i)
-                {
-                    byte b = Marshal.ReadByte(IntPtr.Add(line.FileName, i));
-                    if (0 == b)
-                        break;
-                    fn.Append((char)b);
-                }
-
-                si.FileName = fn.ToString();
-                si.LineNumber = (int)line.LineNumber;
-
-                _symbolCache.Add(si);
-            }
-            else
-            {
-                si.FileName = "(no source)";
-            }
-
-            return true;
-        }
-
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1021:AvoidOutParameters", MessageId = "1#")]
-        public bool LookupSymbol(string name, out IEnumerable<SymbolInfo> symbols)
-        {
             LastErrorMessage = string.Empty;
-
-            symbols = null;
-            if ((_symbolCache == null) || (_symbolCache.Count == 0))
-            {
-                if (!EnumerateAllSymbols())
-                    return false;
-            }
-
-            symbols = _symbolCache.Where(s => s.Name.Contains(name));
-            if (symbols.Any())
-                return true;
-
-            return false;
+            
+            NativeMethods.SYMBOL_INFO symbol = new NativeMethods.SYMBOL_INFO();
+            return NativeMethods.SymFromName(_libHandle, name, ref symbol);
         }
-
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1021:AvoidOutParameters", MessageId = "1#")]
-        public bool LookupSymbol(string name, out SymbolInfo symbolInfo)
-        {
-            LastErrorMessage = string.Empty;
-
-            symbolInfo = new SymbolInfo();
-
-            if ((_symbolCache == null) || (_symbolCache.Count == 0))
-            {
-                if (!EnumerateAllSymbols())
-                    return false;
-            }
-
-            var symbols = _symbolCache.Where(s => s.Name.Contains(name));
-            if (!symbols.Any())
-            {
-                return false;
-            }
-            symbolInfo = symbols.OrderBy(s => s.Address).First();
-            return true;
-        }
-
     }
 }

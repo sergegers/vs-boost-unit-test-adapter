@@ -5,6 +5,7 @@
 
 using BoostTestAdapter.Boost.Runner;
 using NUnit.Framework;
+using System.IO;
 
 namespace BoostTestAdapterNunit
 {
@@ -13,6 +14,16 @@ namespace BoostTestAdapterNunit
     {
         #region Utility Methods
 
+        /// <summary>
+        /// Generates a dummy fully qualified path for the provided filename
+        /// </summary>
+        /// <param name="filename">The filename to generate a fully qualified version for it</param>
+        /// <returns>A dummy fully qualified path</returns>
+        private static string GenerateFullyQualifiedPath(string filename)
+        {
+            return @"C:\Temp\" + filename;
+        }
+        
         /// <summary>
         /// Generates a command line args instance with pre-determined values.
         /// </summary>
@@ -26,19 +37,19 @@ namespace BoostTestAdapterNunit
 
             args.LogFormat = OutputFormat.XML;
             args.LogLevel = LogLevel.TestSuite;
-            args.LogFile = "log.xml";
+            args.LogFile = GenerateFullyQualifiedPath("log.xml");
 
             args.ReportFormat = OutputFormat.XML;
             args.ReportLevel = ReportLevel.Detailed;
-            args.ReportFile = "report.xml";
+            args.ReportFile = GenerateFullyQualifiedPath("report.xml");
 
             args.DetectMemoryLeaks = 0;
 
             args.CatchSystemErrors = false;
             args.DetectFPExceptions = true;
 
-            args.StandardOutFile = "stdout.log";
-            args.StandardErrorFile = "stderr.log";
+            args.StandardOutFile = GenerateFullyQualifiedPath("stdout.log");
+            args.StandardErrorFile = GenerateFullyQualifiedPath("stderr.log");
 
             return args;
         }
@@ -70,8 +81,12 @@ namespace BoostTestAdapterNunit
         public void SampleCommandLineArgs()
         {
             BoostTestRunnerCommandLineArgs args = GenerateCommandLineArgs();
-
-            Assert.That(args.ToString(), Is.EqualTo("\"--run_test=test,suite/*\" \"--catch_system_errors=no\" \"--log_format=xml\" \"--log_level=test_suite\" \"--log_sink=log.xml\" \"--report_format=xml\" \"--report_level=detailed\" \"--report_sink=report.xml\" \"--detect_memory_leak=0\" \"--detect_fp_exceptions=yes\" > \"stdout.log\" 2> \"stderr.log\""));
+            // serge: boost 1.60 requires uppercase input
+            Assert.That(args.ToString(), Is.EqualTo("\"--run_test=test,suite/*\" \"--catch_system_errors=no\" \"--log_format=XML\" \"--log_level=test_suite\" \"--log_sink="
+                + GenerateFullyQualifiedPath("log.xml") + "\" \"--report_format=XML\" \"--report_level=detailed\" \"--report_sink="
+                + GenerateFullyQualifiedPath("report.xml") + "\" \"--detect_memory_leak=0\" \"--detect_fp_exceptions=yes\" > \"" 
+                + GenerateFullyQualifiedPath("stdout.log") + "\" 2> \""
+                + GenerateFullyQualifiedPath("stderr.log") + "\""));
         }
 
         /// <summary>
@@ -102,7 +117,6 @@ namespace BoostTestAdapterNunit
             Assert.That(args.BuildInfo, Is.EqualTo(clone.BuildInfo));
             Assert.That(args.AutoStartDebug, Is.EqualTo(clone.AutoStartDebug));
             Assert.That(args.CatchSystemErrors, Is.EqualTo(clone.CatchSystemErrors));
-            Assert.That(args.BreakExecPath, Is.EqualTo(clone.BreakExecPath));
             Assert.That(args.ColorOutput, Is.EqualTo(clone.ColorOutput));
             Assert.That(args.ResultCode, Is.EqualTo(clone.ResultCode));
             Assert.That(args.Random, Is.EqualTo(clone.Random));
@@ -112,6 +126,56 @@ namespace BoostTestAdapterNunit
             Assert.That(args.ListContent, Is.EqualTo(clone.ListContent));
 
             Assert.That(args.ToString(), Is.EqualTo(clone.ToString()));
+        }
+
+        /// <summary>
+        /// Based on how a file path is provided, the class tries to root the path if possible
+        /// 
+        /// Test aims:
+        ///     - The file path is rooted if possible.
+        /// </summary>
+        [Test]
+        public void FilePaths()
+        {
+            BoostTestRunnerCommandLineArgs args = new BoostTestRunnerCommandLineArgs();
+
+            args.LogFile = "log.xml";
+            Assert.That(args.LogFile, Is.EqualTo("log.xml"));
+            Assert.That(args.ToString(), Is.EqualTo("\"--log_sink=log.xml\""));
+
+            args.WorkingDirectory = @"C:\";
+            Assert.That(args.LogFile, Is.EqualTo(@"C:\log.xml"));
+            Assert.That(args.ToString(), Is.EqualTo("\"--log_sink=C:\\log.xml\""));
+
+            args.LogFile = @"D:\Temp\log.xml";
+            Assert.That(args.LogFile, Is.EqualTo(@"D:\Temp\log.xml"));
+            Assert.That(args.ToString(), Is.EqualTo("\"--log_sink=D:\\Temp\\log.xml\""));
+        }
+
+        /// <summary>
+        /// Verifies that when requesting list content, the command line is generated accordingly
+        /// 
+        /// Test aims:
+        ///     - --list_content command line arguments are correctly generated
+        /// </summary>
+        [Test]
+        public void ListContentCommandLineArgs()
+        {
+            BoostTestRunnerCommandLineArgs args = new BoostTestRunnerCommandLineArgs();
+
+            args.ListContent = ListContentFormat.DOT;
+
+            args.StandardOutFile = @"C:\Temp\list_content.dot.out";
+            args.StandardErrorFile = @"C:\Temp\list_content.dot.err";
+
+            const string expected = "\"--list_content=DOT\" > \"C:\\Temp\\list_content.dot.out\" 2> \"C:\\Temp\\list_content.dot.err\"";
+            Assert.That(args.ToString(), Is.EqualTo(expected));
+
+            args.ReportFormat = OutputFormat.XML;
+            args.ReportFile = @"C:\Temp\list_content.report.xml";
+            
+            // list content only includes the --list_content and the output redirection commands
+            Assert.That(args.ToString(), Is.EqualTo(expected));
         }
 
         #endregion Tests

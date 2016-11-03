@@ -29,6 +29,9 @@ namespace BoostTestAdapter.Boost.Test
             this.Id = null;
             this.Name = name;
             this.Parent = parent;
+            this.Labels = Enumerable.Empty<string>();
+
+            this.DefaultEnabled = true;
 
             if (parent != null)
             {
@@ -67,15 +70,55 @@ namespace BoostTestAdapter.Boost.Test
         }
 
         /// <summary>
+        /// Optional source file information related to this test unit.
+        /// </summary>
+        public SourceFileInfo Source { get; set; }
+
+        /// <summary>
+        /// Identifies any label associations with this test unit
+        /// </summary>
+        public IEnumerable<string> Labels { get; set; }
+
+
+
+        /// <summary>
+        /// Cached version of the fully qualified name builder
+        /// </summary>
+        private QualifiedNameBuilder _fullyQualifiedName = null;
+
+        /// <summary>
+        /// Internal property which provides a cached QualifiedNameBuilder to represent the fully qualified name
+        /// </summary>
+        private QualifiedNameBuilder FullyQualifiedNameBuilder
+        {
+            get
+            {
+                if (this._fullyQualifiedName == null)
+                {
+                    _fullyQualifiedName = (Parent == null) ? new QualifiedNameBuilder() : Parent.FullyQualifiedNameBuilder.Clone();
+                    _fullyQualifiedName.Push(this);
+                }
+
+                return _fullyQualifiedName;
+            }
+        }
+        
+        /// <summary>
         /// Identifies the fully qualified name of this TestUnit
         /// </summary>
         public string FullyQualifiedName
         {
             get
             {
-                return new QualifiedNameBuilder(this).ToString();
+                return FullyQualifiedNameBuilder.ToString();
             }
         }
+
+        /// <summary>
+        ///  Identifies whether the test is explicitly disabled by setting this value to false
+        /// </summary>
+
+        public bool DefaultEnabled { get; set; }
 
         #endregion Properties
 
@@ -87,58 +130,55 @@ namespace BoostTestAdapter.Boost.Test
         {
             throw new InvalidOperationException();
         }
-
-        #region IXmlSerializable Helpers
-
-        /// <summary>
-        /// Xml Tag/Attribute Constants
-        /// </summary>
-        private static class Xml
-        {
-            public const string Id = "id";
-            public const string Name = "name";
-        }
-
-        /// <summary>
-        /// Reads common Xml attributes from a TestUnit Xml node.
-        /// </summary>
-        /// <param name="reader">XmlReader</param>
-        protected void ReadXmlAttributes(XmlReader reader)
-        {
-            Utility.Code.Require(reader, "reader");
-
-            this.Name = reader.GetAttribute(Xml.Name);
-
-            string id = reader.GetAttribute(Xml.Id);
-            if (!string.IsNullOrEmpty(id))
-            {
-                this.Id = int.Parse(id, CultureInfo.InvariantCulture);
-            }
-        }
-
-        /// <summary>
-        /// Writes common Xml attributes from a TestUnit Xml node.
-        /// </summary>
-        /// <param name="writer">XmlWriter</param>
-        protected void WriteXmlAttributes(XmlWriter writer)
-        {
-            Utility.Code.Require(writer, "writer");
-
-            if (this.Id.HasValue)
-            {
-                writer.WriteAttributeString(Xml.Id, this.Id.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            writer.WriteAttributeString(Xml.Name, this.Name);
-        }
-
-        #endregion IXmlSerializable Helpers
-
+        
         #region ITestVisitable
 
         public abstract void Apply(ITestVisitor visitor);
 
         #endregion ITestVisitable
+
+        #region Utility
+
+        /// <summary>
+        /// Given a fully qualified name of a <b>test case</b>, generates the respective test unit hierarchy.
+        /// </summary>
+        /// <param name="fullyQualifiedName">The fully qualified name of the <b>test case</b></param>
+        /// <returns>The test case hierarcy represented by the provided fully qualified name</returns>
+        public static TestCase FromFullyQualifiedName(string fullyQualifiedName)
+        {
+            return FromFullyQualifiedName(QualifiedNameBuilder.FromString(fullyQualifiedName));
+        }
+        
+        /// <summary>
+        /// Given a fully qualified name of a <b>test case</b>, generates the respective test unit hierarchy.
+        /// </summary>
+        /// <param name="fullyQualifiedName">The fully qualified name of the <b>test case</b></param>
+        /// <returns>The test case hierarchy represented by the provided fully qualified name</returns>
+        /// <remarks>The parameter 'fullyQualifiedName' will be modified and emptied in due process</remarks>
+        private static TestCase FromFullyQualifiedName(QualifiedNameBuilder fullyQualifiedName)
+        {
+            // Reverse the fully qualified name stack i.e. Master Test Suite should be first element and Test Case should be last element
+            Stack<string> hierarchy = new Stack<string>();
+            while (fullyQualifiedName.Peek() != null)
+            {
+                hierarchy.Push(fullyQualifiedName.Peek());
+                fullyQualifiedName.Pop();
+            }
+
+            TestSuite parent = null;
+
+            // Treat each entry (except for the last) as a test suite
+            while (hierarchy.Count > 1)
+            {
+                parent = new TestSuite(hierarchy.Peek(), parent);
+                hierarchy.Pop();
+            }
+
+            // Treat the last entry as a test case
+            return (hierarchy.Count == 1) ? new TestCase(hierarchy.Peek(), parent) : null;
+        }
+
+        #endregion Utility
 
         #region object overrides
 

@@ -3,9 +3,10 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 
-using System.Collections.Generic;
+using System;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Xml;
 using BoostTestAdapter.Boost.Results;
@@ -137,26 +138,105 @@ namespace BoostTestAdapterNunit
 
             foreach (LogEntry entry in entries)
             {
-                LogEntry found =
-                    testResult.LogEntries.FirstOrDefault(
-                        e =>
-                        {
-                            var entryDetail = Regex.Replace(entry.Detail, @"\r|\n", string.Empty);
-                            var eDetail = Regex.Replace(e.Detail, @"\r|\n", string.Empty);
-                            return (e.ToString() == entry.ToString()) && (eDetail == entryDetail);
-                        });
+                LogEntry found = Locate(entry, testResult);
                 Assert.That(found, Is.Not.Null);
 
                 AssertSourceInfoDetails(found.Source, entry.Source);
             }
 
-            var entriesMemLeaks = entries.Where((e) => e is LogEntryMemoryLeak).GetEnumerator();
-            var testResultMemleaks = testResult.LogEntries.Where((e) => e is LogEntryMemoryLeak).GetEnumerator();
+            AssertErrorDetails(testResult, entries);
+            AssertMemoryLeakDetails(testResult, entries);
+        }
 
-            while (testResultMemleaks.MoveNext() && entriesMemLeaks.MoveNext())
+        /// <summary>
+        /// Locates a similar log entry within the provided test result collection
+        /// </summary>
+        /// <param name="entry">The entry to locate within testResult</param>
+        /// <param name="testResult">The collection from which to look into</param>
+        /// <returns>A LogEntry instance matching the provided entry or null if one cannot be found</returns>
+        private LogEntry Locate(LogEntry entry, BoostTestResult testResult)
+        {
+            return testResult.LogEntries.FirstOrDefault(
+                e =>
+                {
+                    // serge: In BoostXmlLog.Parse(TestResultCollection collection) method
+                    // Xml document is recreated. There are insignificant whitespace
+                    // are appearing during transformation. So let's truncate them.
+                    var entryDetail = Regex.Replace(entry.Detail, @"\r|\n\s+", string.Empty);
+                    var eDetail = Regex.Replace(e.Detail, @"\r|\n\s+", string.Empty);
+                    return (e.ToString() == entry.ToString()) && (eDetail == entryDetail);
+                });
+        }
+
+        /// <summary>
+        /// Iterates over both collections in parallel
+        /// </summary>
+        /// <typeparam name="T">The type to filter out</typeparam>
+        /// <param name="testResult">The lhs collection</param>
+        /// <param name="entries">The rhs collection</param>
+        /// <returns>An enumeration of a parallel iteration over both collections</returns>
+        static private IEnumerable<Tuple<T, T>> DualIterate<T>(IEnumerable<T> lhs, IEnumerable<T> rhs)
+        {
+            var a = lhs.OfType<T>().GetEnumerator();
+            var b = rhs.OfType<T>().GetEnumerator();
+
+            while (a.MoveNext() && b.MoveNext())
             {
-                AssertMemoryLeakDetails((LogEntryMemoryLeak)testResultMemleaks.Current,
-                    (LogEntryMemoryLeak)entriesMemLeaks.Current);
+                yield return Tuple.Create(a.Current, b.Current);
+            }
+
+            while (a.MoveNext())
+            {
+                yield return Tuple.Create<T, T>(a.Current, default(T));
+            }
+
+            while (b.MoveNext())
+            {
+                yield return Tuple.Create<T, T>(default(T), b.Current);
+            }
+        }
+
+        /// <summary>
+        /// Helper wrapper over DualIterate specific for our test scenarios
+        /// </summary>
+        /// <typeparam name="T">Type to filter out</typeparam>
+        /// <param name="testResult">The test result collection</param>
+        /// <param name="entries">The entries collection</param>
+        /// <returns>An enumeration of a parallel iteration over both collections</returns>
+        private IEnumerable<Tuple<T, T>> DualIterate<T>(BoostTestResult testResult, IEnumerable<LogEntry> entries)
+        {
+            return DualIterate<T>(testResult.LogEntries.OfType<T>(), entries.OfType<T>());
+        }
+
+        /// <summary>
+        /// Compares the error entries contained within the test result collection and the provided log entries
+        /// </summary>
+        /// <param name="testResult">The test result collection</param>
+        /// <param name="entries">The log entries to compare against</param>
+        private void AssertErrorDetails(BoostTestResult testResult, IEnumerable<LogEntry> entries)
+        {
+            foreach (var entry in DualIterate<LogEntryError>(testResult, entries))
+            {
+                Assert.That(entry.Item1, Is.Not.Null);
+                Assert.That(entry.Item2, Is.Not.Null);
+
+                Assert.That(entry.Item1.ContextFrames, Is.EquivalentTo(entry.Item2.ContextFrames));
+            }
+        }
+
+        /// <summary>
+        /// Compares the memory leak entries contained within the test result collection and the provided log entries
+        /// </summary>
+        /// <param name="testResult">The test result collection</param>
+        /// <param name="entries">The log entries to compare against</param>
+        private void AssertMemoryLeakDetails(BoostTestResult testResult, IEnumerable<LogEntry> entries)
+        {
+            foreach (var entry in DualIterate<LogEntryMemoryLeak>(testResult, entries))
+            {
+                Assert.That(entry.Item1, Is.Not.Null);
+                Assert.That(entry.Item2, Is.Not.Null);
+
+                AssertMemoryLeakDetails(entry.Item1, entry.Item2);
             }
         }
 
@@ -264,8 +344,8 @@ namespace BoostTestAdapterNunit
             {
                 ((report == null) ? null : new BoostXmlReport(report)),
                 ((log == null) ? null : new BoostXmlLog(log)),
-                ((stdout == null) ? null : new BoostStandardOutput(stdout) {FailTestOnMemoryLeak = true}),
-                ((stderr == null) ? null : new BoostStandardError(stderr))
+                ((stdout == null) ? null : new BoostStandardOutput(stdout) { FailTestOnMemoryLeak = true }),
+                ((stderr == null) ? null : new BoostStandardError(stderr) { FailTestOnMemoryLeak = true })
             });
         }
 
@@ -299,34 +379,33 @@ namespace BoostTestAdapterNunit
         [Test]
         public void ParseBoostReportLogContainingGermanCharacters()
         {
+            using (var reportFile = TestHelper.CopyEmbeddedResourceToTempDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.SpecialCharacters", "sample.test.report.xml"))
+            using (var logFile = TestHelper.CopyEmbeddedResourceToTempDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.SpecialCharacters", "sample.test.log.xml"))
+            {
+                Parse(reportFile.Path, logFile.Path);
 
-            string reportFilePath = TestHelper.CopyEmbeddedResourceToDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.SpecialCharacters", "sample.test.report.xml", Path.GetTempPath());
-            string logFilePath = TestHelper.CopyEmbeddedResourceToDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.SpecialCharacters", "sample.test.log.xml", Path.GetTempPath());
+                BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
+                Assert.That(masterSuiteResult, Is.Not.Null);
 
-            Parse(reportFilePath, logFilePath);
+                AssertReportDetails(masterSuiteResult, null, "MyTest", TestResultType.Failed, 0, 4, 0, 0, 1, 0, 0);
 
-            BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
-            Assert.That(masterSuiteResult, Is.Not.Null);
+                BoostTestResult testCaseResult = this.TestResultCollection["SpecialCharactersInStringAndIdentifier"];
+                Assert.That(testCaseResult, Is.Not.Null);
 
-            AssertReportDetails(masterSuiteResult, null, "MyTest", TestResultType.Failed, 0, 4, 0, 0, 1, 0, 0);
+                AssertReportDetails(testCaseResult, masterSuiteResult, "SpecialCharactersInStringAndIdentifier", TestResultType.Failed, 0, 4, 0);
+                AssertLogDetails(testCaseResult
+                    , 2000
+                    , new[]
+                    {
+                    new LogEntryError("check germanSpecialCharacterString == \"NotTheSameString\" failed [Hello my name is Rüdiger != NotTheSameString]",new SourceFileInfo("boostunittest.cpp", 8)),
+                    new LogEntryError("check germanSpecialCharacterString == \"\" failed [üöä != ]",new SourceFileInfo("boostunittest.cpp", 12)),
+                    new LogEntryError("check anzahlDerÄnderungen == 1 failed [2 != 1]",new SourceFileInfo("boostunittest.cpp", 17)),
+                    new LogEntryError("check üöä == 1 failed [2 != 1]",new SourceFileInfo("boostunittest.cpp", 18)),
 
-            BoostTestResult testCaseResult = this.TestResultCollection["SpecialCharactersInStringAndIdentifier"];
-            Assert.That(testCaseResult, Is.Not.Null);
+                    });
 
-            AssertReportDetails(testCaseResult, masterSuiteResult, "SpecialCharactersInStringAndIdentifier", TestResultType.Failed, 0, 4, 0);
-            AssertLogDetails(testCaseResult
-                , 2000
-                , new[]
-                {
-                    new LogEntryError("check germanSpecialCharacterString == \"NotTheSameString\" failed [Hello my name is Rüdiger != NotTheSameString]",new SourceFileInfo("boostunittest.cpp", 8)), 
-                    new LogEntryError("check germanSpecialCharacterString == \"\" failed [üöä != ]",new SourceFileInfo("boostunittest.cpp", 12)), 
-                    new LogEntryError("check anzahlDerÄnderungen == 1 failed [2 != 1]",new SourceFileInfo("boostunittest.cpp", 17)), 
-                    new LogEntryError("check üöä == 1 failed [2 != 1]",new SourceFileInfo("boostunittest.cpp", 18)), 
-            
-                });
-
-            Assert.That(testCaseResult.LogEntries.Count, Is.EqualTo(4));
-
+                Assert.That(testCaseResult.LogEntries.Count, Is.EqualTo(4));
+            }
         }
 
         /// <summary>
@@ -339,30 +418,29 @@ namespace BoostTestAdapterNunit
         [Test]
         public void ParseBoostReportLogContainingControlCharacters()
         {
+            using (var reportFile = TestHelper.CopyEmbeddedResourceToTempDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.ControlCharacters", "sample.test.report.txt"))
+            using (var logFile = TestHelper.CopyEmbeddedResourceToTempDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.ControlCharacters", "sample.test.log.txt"))
+            {
+                Parse(reportFile.Path, logFile.Path);
 
-            string reportFilePath = TestHelper.CopyEmbeddedResourceToDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.ControlCharacters", "sample.test.report.txt", Path.GetTempPath());
-            string logFilePath = TestHelper.CopyEmbeddedResourceToDirectory("BoostTestAdapterNunit.Resources.ReportsLogs.ControlCharacters", "sample.test.log.txt", Path.GetTempPath());
+                BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
+                Assert.That(masterSuiteResult, Is.Not.Null);
 
-            Parse(reportFilePath, logFilePath);
+                AssertReportDetails(masterSuiteResult, null, "ControlCharactersUnitTests", TestResultType.Failed, 0, 1, 0, 0, 1, 0, 0);
 
-            BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
-            Assert.That(masterSuiteResult, Is.Not.Null);
+                BoostTestResult testCaseResult = this.TestResultCollection["TestControlChar"];
+                Assert.That(testCaseResult, Is.Not.Null);
 
-            AssertReportDetails(masterSuiteResult, null, "ControlCharactersUnitTests", TestResultType.Failed, 0, 1, 0, 0, 1, 0, 0);
-
-            BoostTestResult testCaseResult = this.TestResultCollection["TestControlChar"];
-            Assert.That(testCaseResult, Is.Not.Null);
-
-            AssertReportDetails(testCaseResult, masterSuiteResult, "TestControlChar", TestResultType.Failed, 0, 1, 0);
-            AssertLogDetails(testCaseResult
-                , 2000
-                , new[]
-                {
-                    new LogEntryError("check { vect1.cbegin(), vect1.cend() } == { vect2.cbegin(), vect2.cend() } failed. \nMismatch in a position 1: 0x00 != 0x01\nMismatch in a position 2: 0x01 != 0x02\nMismatch in a position 3: 0x03 != 0x04\nMismatch in a position 7: 0x00 != A\nCollections size mismatch: 32 != 31",new SourceFileInfo("boostunittest.cpp", 8)), 
+                AssertReportDetails(testCaseResult, masterSuiteResult, "TestControlChar", TestResultType.Failed, 0, 1, 0);
+                AssertLogDetails(testCaseResult
+                    , 2000
+                    , new[]
+                    {
+                    new LogEntryError("check { vect1.cbegin(), vect1.cend() } == { vect2.cbegin(), vect2.cend() } failed. \nMismatch in a position 1: 0x00 != 0x01\nMismatch in a position 2: 0x01 != 0x02\nMismatch in a position 3: 0x03 != 0x04\nMismatch in a position 7: 0x00 != A\nCollections size mismatch: 32 != 31",new SourceFileInfo("boostunittest.cpp", 8)),
                 });
 
-            Assert.That(testCaseResult.LogEntries.Count, Is.EqualTo(1));
-
+                Assert.That(testCaseResult.LogEntries.Count, Is.EqualTo(1));
+            }
         }
 
 
@@ -475,7 +553,6 @@ namespace BoostTestAdapterNunit
             using (Stream report = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.PassedTest.sample.test.report.xml"))
             using (Stream log = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.PassedTest.sample.test.log.xml"))
             {
-
                 Parse(report, log);
 
                 BoostTestResult testCaseResult = AssertPassedReportDetails();
@@ -745,6 +822,163 @@ namespace BoostTestAdapterNunit
                     new LogEntryStandardOutputMessage("Hello Standard Output World"),
                     new LogEntryStandardErrorMessage("Hello Standard Error World")
                 });
+            }
+        }
+
+        /// <summary>
+        /// Boost Test Xml log of a test fixture using 'depends_on' which generates invalid Xml.
+        /// 
+        /// See also:
+        /// - https://github.com/etas/vs-boost-unit-test-adapter/pull/72
+        /// - https://github.com/etas/vs-boost-unit-test-adapter/pull/77
+        /// 
+        /// Test aims:
+        ///     - Boost Test results can handle invalid Xml logs and extract and interpret the <TestLog> portion if available.
+        /// </summary>
+        [Test]
+        public void ParseInvalidXmlLog()
+        {
+            using (Stream report = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.InvalidXmlLog.test_hlp.exe.test.report.xml"))
+            using (Stream log = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.InvalidXmlLog.test_hlp.exe.test.log.xml"))
+            {
+                Parse(report, log, null, null);
+
+                BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
+                Assert.That(masterSuiteResult, Is.Not.Null);
+
+                AssertReportDetails(masterSuiteResult, null, "test_hlp", TestResultType.Failed, 0, 3, 0, 1, 1, 0, 0);
+
+                BoostTestResult testSuiteResult = this.TestResultCollection["bpts"];
+                Assert.That(testSuiteResult, Is.Not.Null);
+
+                AssertReportDetails(testSuiteResult, masterSuiteResult, "bpts", TestResultType.Failed, 0, 3, 0, 1, 1, 0, 0);
+
+                BoostTestResult testCaseResult = this.TestResultCollection["bpts/plugin_fxs"];
+                Assert.That(testCaseResult, Is.Not.Null);
+                AssertReportDetails(testCaseResult, testSuiteResult, "plugin_fxs", TestResultType.Passed, 0, 0, 0);
+
+                testCaseResult = this.TestResultCollection["bpts/thread_hwbpt"];
+                Assert.That(testCaseResult, Is.Not.Null);
+                AssertReportDetails(testCaseResult, testSuiteResult, "thread_hwbpt", TestResultType.Failed, 0, 3, 0);
+            }
+        }
+
+        /// <summary>
+        /// Boost Test Xml log of a test using contexts (i.e. BOOST_TEST_CONTEXT and BOOST_TEST_INFO)
+        /// 
+        /// Reference: http://www.boost.org/doc/libs/1_60_0/libs/test/doc/html/boost_test/test_output/contexts.html
+        ///
+        /// Test aims:
+        ///     - Boost Test results can properly parse and represent context information
+        /// </summary>
+        [Test]
+        public void ParseTestContext()
+        {
+            using (Stream report = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.TestContext.ExampleBoostUnittest.exe.test.report.xml"))
+            using (Stream log = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.TestContext.ExampleBoostUnittest.exe.test.log.xml"))
+            {
+                Parse(report, log, null, null);
+
+                BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
+                Assert.That(masterSuiteResult, Is.Not.Null);
+
+                AssertReportDetails(masterSuiteResult, null, "mytest", TestResultType.Failed, 5, 4, 0, 0, 1, 0, 0);
+                
+                BoostTestResult testCaseResult = this.TestResultCollection["test1"];
+                Assert.That(testCaseResult, Is.Not.Null);
+
+                AssertReportDetails(testCaseResult, masterSuiteResult, "test1", TestResultType.Failed, 5, 4, 0);
+                AssertLogDetails(testCaseResult, 4000, new LogEntry[] {
+                    new LogEntryError(
+                        "check processor.op2(i, j) has failed",
+                        new SourceFileInfo("c:/exampleboostunittest/source.cpp", 19),
+                        new string[] { "With optimization level 1", "With parameter i = 1", "With parameter j = 0" }
+                    ),
+                    new LogEntryError(
+                        "check processor.op1(i) has failed",
+                        new SourceFileInfo("c:/exampleboostunittest/source.cpp", 16),
+                        new string[] { "With optimization level 2", "With parameter i = 0" }
+                    ),
+                    new LogEntryError(
+                        "check processor.op1(i) has failed",
+                        new SourceFileInfo("c:/exampleboostunittest/source.cpp", 16),
+                        new string[] { "With optimization level 2", "With parameter i = 1" }
+                    ),
+                    new LogEntryError(
+                        "check processor.op2(i, j) has failed",
+                        new SourceFileInfo("c:/exampleboostunittest/source.cpp", 19),
+                        new string[] { "With optimization level 2", "With parameter i = 1", "With parameter j = 0" }
+                    ),
+                });
+            }
+        }
+
+        /// <summary>
+        /// Tests the correct memory leak discovery is also applied on standard error
+        /// </summary>
+        [Test]
+        public void MemoryLeakStandardError()
+        {
+            using (Stream report = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.MemoryLeakTest.sample.test.report.xml"))
+            using (Stream log = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.MemoryLeakTest.sample.test.log.xml"))
+            using (Stream stdout = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.Empty.sample.test.stdout.log"))
+            using (Stream stderr = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.MemoryLeakTest.sample.test.stderr.log"))
+            {
+                Parse(report, log, stdout, stderr);
+
+                BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
+                Assert.That(masterSuiteResult, Is.Not.Null);
+
+                // NOTE The values here do not match the Xml report file since the attributes:
+                //      'test_cases_passed', 'test_cases_failed', 'test_cases_skipped' and 'test_cases_aborted'
+                //      are computed in case test results are modified from the Xml output
+                //      (which in the case of memory leaks, passing tests may be changed to failed).
+                AssertReportDetails(masterSuiteResult, null, "MyTest", TestResultType.Passed, 0, 0, 0, 0, 1, 0, 0);
+
+                BoostTestResult testSuiteResult = this.TestResultCollection["LeakingSuite"];
+                Assert.That(testSuiteResult, Is.Not.Null);
+
+                AssertReportDetails(testSuiteResult, masterSuiteResult, "LeakingSuite", TestResultType.Passed, 0, 0, 0, 0, 1, 0, 0);
+
+                BoostTestResult testCaseResult = this.TestResultCollection["LeakingSuite/LeakingTestCase"];
+                Assert.That(testCaseResult, Is.Not.Null);
+
+                AssertReportDetails(testCaseResult, testSuiteResult, "LeakingTestCase", TestResultType.Failed, 0, 0, 0);
+                AssertLogDetails(testCaseResult, 0, new LogEntry[] {
+                    new LogEntryMessage("Test case LeakingTestCase did not check any assertions", new SourceFileInfo("./boost/test/impl/results_collector.ipp", 220)),
+                    new LogEntryMemoryLeak(null, null, null, 8, 837, " Data: <        > 98 D5 D9 00 00 00 00 00 \n"),
+                    new LogEntryMemoryLeak(null, null, null, 32, 836, " Data: <`-  Leak...     > 60 2D BD 00 4C 65 61 6B 2E 2E 2E 00 CD CD CD CD ")
+                });
+            }
+        }
+
+        /// <summary>
+        /// Assert that multiple test reports for the same test are aggregated under the same result
+        /// </summary>
+        [Test]
+        public void DataTestCaseResultAggregation()
+        {
+            using (Stream report = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.DataTestCase.sample.test.report.xml"))
+            using (Stream log = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.DataTestCase.sample.test.log.xml"))
+            using (Stream stdout = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.Empty.sample.test.stdout.log"))
+            using (Stream stderr = TestHelper.LoadEmbeddedResource("BoostTestAdapterNunit.Resources.ReportsLogs.Empty.sample.test.stderr.log"))
+            {
+                Parse(report, log, stdout, stderr);
+
+                BoostTestResult masterSuiteResult = this.TestResultCollection[string.Empty];
+                Assert.That(masterSuiteResult, Is.Not.Null);
+
+
+                // NOTE The values here do not match the Xml report file since the results are aggregated as one.
+                //      All tests are considered as failed since they share the same result.
+                AssertReportDetails(masterSuiteResult, null, "MultipleTests", TestResultType.Failed, 4, 1, 0, 0, 1, 0, 0);
+                
+                BoostTestResult testCaseResult = this.TestResultCollection["test_case_arity1_implicit"];
+                Assert.That(testCaseResult, Is.Not.Null);
+
+                AssertReportDetails(testCaseResult, masterSuiteResult, "test_case_arity1_implicit", TestResultType.Failed, 4, 1, 0);
+
+                Assert.That(testCaseResult.Duration, Is.EqualTo(4000));
             }
         }
     }

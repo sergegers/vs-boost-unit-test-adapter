@@ -3,7 +3,6 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 
-using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -14,7 +13,9 @@ using BoostTestAdapter.Utility.VisualStudio;
 using BoostTestAdapterNunit.Fakes;
 using BoostTestAdapterNunit.Utility;
 using NUnit.Framework;
-using ListContentHelper = BoostTestAdapterNunit.Fakes.StubListContentHelper;
+using BoostTestAdapter.Boost.Runner;
+using FakeItEasy;
+using BoostTestAdapter.Utility.ExecutionContext;
 
 namespace BoostTestAdapterNunit
 {
@@ -23,7 +24,7 @@ namespace BoostTestAdapterNunit
     {
         /// <summary>
         /// The scope of this test is to check that if the Discoverer is given multiple project,
-        /// method DiscoverTests splits appropiately the sources of type exe and of type dll in exe sources and dll sources
+        /// method DiscoverTests splits appropriately the sources of type exe and of type dll in exe sources and dll sources
         /// and dispatches the discovery accordingly.
         /// </summary>
         [Test]
@@ -32,8 +33,6 @@ namespace BoostTestAdapterNunit
             var sources = new[]
             {
                 "ListContentSupport" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources1" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources2" + BoostTestDiscoverer.ExeExtension,
                 "DllProject1" + BoostTestDiscoverer.DllExtension,
                 "DllProject2" + BoostTestDiscoverer.DllExtension,
             };
@@ -45,7 +44,7 @@ namespace BoostTestAdapterNunit
             context.RegisterSettingProvider(BoostTestAdapterSettings.XmlRootName, new BoostTestAdapterSettingsProvider());
             context.LoadEmbeddedSettings("BoostTestAdapterNunit.Resources.Settings.externalTestRunner.runsettings");
 
-            var boostTestDiscovererFactory = new StubBoostTestDiscovereFactory();
+            var boostTestDiscovererFactory = new StubBoostTestDiscovererFactory();
 
             var boostTestDiscoverer = new BoostTestDiscoverer(boostTestDiscovererFactory);
             boostTestDiscoverer.DiscoverTests(sources, context, logger, sink);
@@ -54,28 +53,17 @@ namespace BoostTestAdapterNunit
 
             // tests are found in the using the fake debughelper
             Assert.That(sink.Tests.Count(x => x.Source == "ListContentSupport" + BoostTestDiscoverer.ExeExtension), Is.EqualTo(8));
-
-            // tests are found in the fake solution 
-            Assert.That(sink.Tests.Count(x => x.Source == "ParseSources1" + BoostTestDiscoverer.ExeExtension), Is.EqualTo(6));
-
-            // no (fake) solution code is found for this project
-            Assert.That(sink.Tests.Any(x => x.Source == "ParseSources2" + BoostTestDiscoverer.ExeExtension), Is.False);
-            
+          
             // the external runner does NOT support the two dll projects
             Assert.That(sink.Tests.Any(x => x.Source == "DllProject1" + BoostTestDiscoverer.DllExtension), Is.False);
             Assert.That(sink.Tests.Any(x => x.Source == "DllProject2" + BoostTestDiscoverer.DllExtension), Is.False);
         }
     }
 
-    internal class StubBoostTestDiscovereFactory : IBoostTestDiscovererFactory, IDisposable
+    internal class StubBoostTestDiscovererFactory : IBoostTestDiscovererFactory
     {
         private readonly DummySolution _dummySolution = new DummySolution("ParseSources1" + BoostTestDiscoverer.ExeExtension, "BoostUnitTestSample.cpp");
-
-        public IBoostTestDiscoverer GetDiscoverer(string source, BoostTestAdapterSettings settings)
-        {
-            throw new NotImplementedException();
-        }
-
+        
         public IEnumerable<FactoryResult> GetDiscoverers(IReadOnlyCollection<string> sources, BoostTestAdapterSettings settings)
         {
             var tmpSources = new List<string>(sources);
@@ -85,12 +73,12 @@ namespace BoostTestAdapterNunit
             if (settings.ExternalTestRunner != null)
             {
                 var extSources = tmpSources
-                    .Where(s => settings.ExternalTestRunner.ExtensionType == Path.GetExtension(s))
+                    .Where(s => settings.ExternalTestRunner.ExtensionType.IsMatch(Path.GetExtension(s)))
                     .ToList();
 
                 discoverers.Add(new FactoryResult()
                 {
-                    Discoverer = new ExternalDiscoverer(settings.ExternalTestRunner),
+                    Discoverer = new ExternalDiscoverer(settings.ExternalTestRunner, _dummySolution.Provider),
                     Sources = extSources
                 });
 
@@ -98,45 +86,58 @@ namespace BoostTestAdapterNunit
             }
 
             // sources that support list-content parameter
-            var listContentHelper = new StubListContentHelper();
-
             var listContentSources = tmpSources
-                .Where(s => Path.GetExtension(s) == BoostTestDiscoverer.ExeExtension)
-                .Where(listContentHelper.IsListContentSupported)
+                .Where(s => (s == ("ListContentSupport" + BoostTestDiscoverer.ExeExtension)))
                 .ToList();
 
             if (listContentSources.Count > 0)
             {
+                IBoostTestRunnerFactory factory = A.Fake<IBoostTestRunnerFactory>();
+                A.CallTo(() => factory.GetRunner(A<string>._, A<BoostTestRunnerFactoryOptions>._)).ReturnsLazily((string source, BoostTestRunnerFactoryOptions options) => new StubListContentRunner(source));
+
                 discoverers.Add(new FactoryResult()
                 {
-                    Discoverer = new ListContentDiscoverer(listContentHelper),
+                    Discoverer = new ListContentDiscoverer(factory, _dummySolution.Provider),
                     Sources = listContentSources
                 });
 
                 tmpSources.RemoveAll(s => listContentSources.Contains(s));
             }
-
-
-            // sources that NOT support the list-content parameter
-            var sourceCodeSources = tmpSources
-                .Where(s => Path.GetExtension(s) == BoostTestDiscoverer.ExeExtension)
-                .ToList();
-
-            if (sourceCodeSources.Count > 0)
-            {
-                discoverers.Add(new FactoryResult()
-                {
-                    Discoverer = new SourceCodeDiscoverer(_dummySolution.Provider),
-                    Sources = sourceCodeSources
-                });
-            }
+  
             return discoverers;
 
         }
+    }
 
-        public void Dispose()
+    internal class StubListContentRunner : IBoostTestRunner
+    {
+        public StubListContentRunner(string source)
         {
-            ((IDisposable)_dummySolution).Dispose();
+            this.Source = source;
+        }
+
+        public bool ListContentSupported
+        {
+            get
+            {
+                return true;
+            }
+        }
+
+        public string Source { get; private set; }
+
+        public void Execute(BoostTestRunnerCommandLineArgs args, BoostTestRunnerSettings settings, IProcessExecutionContext context)
+        {
+            Copy("BoostTestAdapterNunit.Resources.ListContentDOT.sample.8.list.content.gv", args.StandardErrorFile);
+        }
+
+        private void Copy(string embeddedResource, string path)
+        {
+            using (Stream inStream = TestHelper.LoadEmbeddedResource(embeddedResource))
+            using (FileStream outStream = File.Create(path))
+            {
+                inStream.CopyTo(outStream);
+            }
         }
     }
 }

@@ -29,13 +29,11 @@ namespace BoostTestAdapter.Settings
         {
             this.TestRunnerSettings = new BoostTestRunnerSettings();
 
+            this.DiscoveryTimeoutMilliseconds = 30000;
+
             this.CommandLineArgs = new BoostTestRunnerCommandLineArgs();
-
-            // Set default configuration values
-
+            
             this.FailTestOnMemoryLeak = false;
-
-            this.ConditionalInclusionsFilteringEnabled = true;
 
             this.LogLevel = LogLevel.TestSuite;
 
@@ -46,6 +44,18 @@ namespace BoostTestAdapter.Settings
             this.DetectFloatingPointExceptions = false;
 
             this.TestBatchStrategy = TestBatch.Strategy.TestCase;
+
+            this.ForceListContent = false;
+
+            this.WorkingDirectory = null;
+
+            this.EnableStdOutRedirection = true;
+
+            this.EnableStdErrRedirection = true;
+
+            this.Filters = TestSourceFilter.Empty;
+
+            this.RunDisabledTests = false;
         }
 
         #region Properties
@@ -57,34 +67,20 @@ namespace BoostTestAdapter.Settings
         {
             get
             {
-                return this.TestRunnerSettings.RunnerTimeout;
+                return this.TestRunnerSettings.Timeout;
             }
 
             set
             {
-                this.TestRunnerSettings.RunnerTimeout = value;
+                this.TestRunnerSettings.Timeout = value;
             }
         }
 
-        [DefaultValue(5000)]
-        public int DiscoveryTimeoutMilliseconds
-        {
-            get
-            {
-                return this.TestRunnerSettings.DiscovererTimeout;
-            }
-
-            set
-            {
-                this.TestRunnerSettings.DiscovererTimeout = value;
-            }
-        }
+        [DefaultValue(30000)]
+        public int DiscoveryTimeoutMilliseconds { get; set; }
 
         [DefaultValue(false)]
         public bool FailTestOnMemoryLeak { get; set; }
-
-        [DefaultValue(true)]
-        public bool ConditionalInclusionsFilteringEnabled { get; set; }
 
         [DefaultValue(LogLevel.TestSuite)]
         public LogLevel LogLevel { get; set; }
@@ -119,8 +115,22 @@ namespace BoostTestAdapter.Settings
 
         public ExternalBoostTestRunnerSettings ExternalTestRunner { get; set; }
 
-        [DefaultValue(TestBatch.Strategy.TestSuite)]
+        [DefaultValue(TestBatch.Strategy.TestCase)]
         public TestBatch.Strategy TestBatchStrategy { get; set; }
+
+        [DefaultValue(false)]
+        public bool ForceListContent { get; set; }
+
+        [DefaultValue(null)]
+        public string WorkingDirectory { get; set; }
+        
+        [DefaultValue(true)]
+        public bool EnableStdOutRedirection { get; set; }
+
+        [DefaultValue(true)]
+        public bool EnableStdErrRedirection { get; set; }
+
+        public TestSourceFilter Filters { get; set; }
 
         #endregion Serialisable Fields
 
@@ -129,6 +139,9 @@ namespace BoostTestAdapter.Settings
 
         [XmlIgnore]
         public BoostTestRunnerCommandLineArgs CommandLineArgs { get; private set; }
+
+        [DefaultValue(false)]
+        public bool RunDisabledTests { get; set; }
 
         #endregion Properties
 

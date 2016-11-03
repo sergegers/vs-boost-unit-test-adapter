@@ -26,16 +26,14 @@ namespace BoostTestAdapter
 
         #endregion Constants
 
-
         #region Constructors
 
         /// <summary>
         /// Default constructor. The default IBoostTestDiscovererFactory implementation is provided.
         /// </summary>
         public BoostTestDiscoverer()
-            :this(new BoostTestDiscovererFactory(new ListContentHelper()))
+            :this(new BoostTestDiscovererFactory())
         {
-        
         }
 
         /// <summary>
@@ -102,6 +100,12 @@ namespace BoostTestAdapter
 
             try
             {
+                // Filter out any sources which are not of interest
+                if (!TestSourceFilter.IsNullOrEmpty(settings.Filters))
+                {
+                    sources = sources.Where(settings.Filters.ShouldInclude);
+                }
+
                 var results = _boostTestDiscovererFactory.GetDiscoverers(sources.ToList(), settings);
                 if (results == null)
                     return;
@@ -110,13 +114,15 @@ namespace BoostTestAdapter
                 foreach (var discoverer in results)
                 {
                     if (discoverer.Sources.Count > 0)
-                        discoverer.Discoverer.DiscoverTests(discoverer.Sources, discoveryContext, Logger.Instance, discoverySink);
+                    {
+                        Logger.Info("Discovering ({0}):   -> [{1}]", discoverer.Discoverer.GetType().Name, string.Join(", ", discoverer.Sources));
+                        discoverer.Discoverer.DiscoverTests(discoverer.Sources, discoveryContext, discoverySink);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error("Exception caught while discovering tests: {0} ({1})", ex.Message, ex.HResult);
-                Logger.Error(ex.StackTrace);
+                Logger.Exception(ex, "Exception caught while discovering tests: {0} ({1})", ex.Message, ex.HResult);
             }
         }
     }

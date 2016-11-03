@@ -1,15 +1,60 @@
-﻿using System.Linq;
+﻿// (C) Copyright ETAS 2015.
+// Distributed under the Boost Software License, Version 1.0.
+// (See accompanying file LICENSE_1_0.txt or copy at
+// http://www.boost.org/LICENSE_1_0.txt)
+
+using System.Linq;
+using System.Text.RegularExpressions;
+
 using BoostTestAdapter;
 using BoostTestAdapter.Discoverers;
 using BoostTestAdapter.Settings;
+
+using BoostTestAdapter.Boost.Runner;
+
 using BoostTestAdapterNunit.Fakes;
+
 using NUnit.Framework;
+using FakeItEasy;
 
 namespace BoostTestAdapterNunit
 {
     [TestFixture]
     class BoostTestDiscovererFactoryTest
     {
+        #region Test Setup/Teardown
+
+        [SetUp]
+        public void SetUp()
+        {
+            this.RunnerFactory = new StubBoostTestRunnerFactory(new[] { ("ListContentSupport" + BoostTestDiscoverer.ExeExtension) });
+            this.DiscovererFactory = new BoostTestDiscovererFactory(this.RunnerFactory);
+        }
+
+        #endregion Test Setup/Teardown
+
+        /// <summary>
+        /// Default factory function for adapter settings
+        /// </summary>
+        /// <returns>The default settings for use within this test fixture</returns>
+        private static BoostTestAdapterSettings CreateAdapterSettings()
+        {
+            // Prefer the use of ListContent where possible
+            return new BoostTestAdapterSettings();
+        }
+
+        private static ExternalBoostTestRunnerSettings CreateExternalRunnerSettings(string extension)
+        {
+            return new ExternalBoostTestRunnerSettings() { ExtensionType = new Regex(extension) };
+        }
+        
+        #region Test Data
+
+        private IBoostTestRunnerFactory RunnerFactory { get; set; }
+
+        private IBoostTestDiscovererFactory DiscovererFactory { get; set; }
+
+        #endregion Test Data
 
         #region Tests
 
@@ -24,26 +69,16 @@ namespace BoostTestAdapterNunit
             var sources = new[]
             {
                 "ListContentSupport" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources1" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources2" + BoostTestDiscoverer.ExeExtension,
                 "DllProject1" + BoostTestDiscoverer.DllExtension,
                 "DllProject2" + BoostTestDiscoverer.DllExtension,
             };
+            
+            var results = this.DiscovererFactory.GetDiscoverers(sources, CreateAdapterSettings());
 
-            var stubListContentHelper = new StubListContentHelper();
-            var boostTestDiscovererFactory = new BoostTestDiscovererFactory(stubListContentHelper);
-
-            var results = boostTestDiscovererFactory.GetDiscoverers(sources, new BoostTestAdapterSettings());
-
-            Assert.That(results.Count(), Is.EqualTo(2));
+            Assert.That(results.Count(), Is.EqualTo(1));
             Assert.That(results.FirstOrDefault(x => x.Discoverer is ListContentDiscoverer), Is.Not.Null);
             var lcd = results.First(x => x.Discoverer is ListContentDiscoverer);
             Assert.That(lcd.Sources, Is.EqualTo(new[] { "ListContentSupport" + BoostTestDiscoverer.ExeExtension }));
-
-            Assert.That(results.FirstOrDefault(x => x.Discoverer is SourceCodeDiscoverer), Is.Not.Null);
-            var scd = results.First(x => x.Discoverer is SourceCodeDiscoverer);
-            Assert.That(scd.Sources, Is.EqualTo(new[] { "ParseSources1" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources2" + BoostTestDiscoverer.ExeExtension }));
 
             Assert.That(results.FirstOrDefault(x => x.Sources.Contains("DllProject1" + BoostTestDiscoverer.DllExtension)), Is.Null);
             Assert.That(results.FirstOrDefault(x => x.Sources.Contains("DllProject2" + BoostTestDiscoverer.DllExtension)), Is.Null);
@@ -61,31 +96,19 @@ namespace BoostTestAdapterNunit
             var sources = new[]
             {
                 "ListContentSupport" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources1" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources2" + BoostTestDiscoverer.ExeExtension,
                 "DllProject1" + BoostTestDiscoverer.DllExtension,
                 "DllProject2" + BoostTestDiscoverer.DllExtension,
             };
+            
+            BoostTestAdapterSettings settings = CreateAdapterSettings();
+            settings.ExternalTestRunner = CreateExternalRunnerSettings(BoostTestDiscoverer.DllExtension);
 
-            var stubListContentHelper = new StubListContentHelper();
-            var boostTestDiscovererFactory = new BoostTestDiscovererFactory(stubListContentHelper);
-            BoostTestAdapterSettings settings = new BoostTestAdapterSettings();
-            settings.ExternalTestRunner = new ExternalBoostTestRunnerSettings
-            {
-                ExtensionType = BoostTestDiscoverer.DllExtension
-            };
+            var results = this.DiscovererFactory.GetDiscoverers(sources, settings);
 
-            var results = boostTestDiscovererFactory.GetDiscoverers(sources, settings);
-
-            Assert.That(results.Count(), Is.EqualTo(3));
+            Assert.That(results.Count(), Is.EqualTo(2));
             Assert.That(results.FirstOrDefault(x => x.Discoverer is ListContentDiscoverer), Is.Not.Null);
             var lcd = results.First(x => x.Discoverer is ListContentDiscoverer);
             Assert.That(lcd.Sources, Is.EqualTo(new[] { "ListContentSupport" + BoostTestDiscoverer.ExeExtension }));
-
-            Assert.That(results.FirstOrDefault(x => x.Discoverer is SourceCodeDiscoverer), Is.Not.Null);
-            var scd = results.First(x => x.Discoverer is SourceCodeDiscoverer);
-            Assert.That(scd.Sources, Is.EqualTo(new[] { "ParseSources1" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources2" + BoostTestDiscoverer.ExeExtension }));
 
             Assert.That(results.FirstOrDefault(x => x.Discoverer is ExternalDiscoverer), Is.Not.Null);
             var exd = results.First(x => x.Discoverer is ExternalDiscoverer);
@@ -106,31 +129,22 @@ namespace BoostTestAdapterNunit
             var sources = new[]
             {
                 "ListContentSupport" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources1" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources2" + BoostTestDiscoverer.ExeExtension,
                 "DllProject1" + BoostTestDiscoverer.DllExtension,
                 "DllProject2" + BoostTestDiscoverer.DllExtension,
             };
+            
+            BoostTestAdapterSettings settings = CreateAdapterSettings();
+            settings.ExternalTestRunner = CreateExternalRunnerSettings(BoostTestDiscoverer.ExeExtension);
 
-            var stubListContentHelper = new StubListContentHelper();
-            var boostTestDiscovererFactory = new BoostTestDiscovererFactory(stubListContentHelper);
-            BoostTestAdapterSettings settings = new BoostTestAdapterSettings();
-            settings.ExternalTestRunner = new ExternalBoostTestRunnerSettings
-            {
-                ExtensionType = BoostTestDiscoverer.ExeExtension
-            };
-
-            var results = boostTestDiscovererFactory.GetDiscoverers(sources, settings);
+            var results = this.DiscovererFactory.GetDiscoverers(sources, settings);
 
             Assert.That(results.Count(), Is.EqualTo(1));
             Assert.That(results.FirstOrDefault(x => x.Discoverer is ListContentDiscoverer), Is.Null);
-            Assert.That(results.FirstOrDefault(x => x.Discoverer is SourceCodeDiscoverer), Is.Null);
             Assert.That(results.FirstOrDefault(x => x.Discoverer is ExternalDiscoverer), Is.Not.Null);
 
             var exd = results.First(x => x.Discoverer is ExternalDiscoverer);
             Assert.That(exd.Sources, Is.EqualTo(new[] { "ListContentSupport" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources1" + BoostTestDiscoverer.ExeExtension,
-                "ParseSources2" + BoostTestDiscoverer.ExeExtension, }));
+            }));
         }
 
         /// <summary>
@@ -143,31 +157,26 @@ namespace BoostTestAdapterNunit
         [Test]
         public void CorrectSingleProjectBoostTestDiscovererDispatchingExternalExe()
         {
-            var stubListContentHelper = new StubListContentHelper();
-            var boostTestDiscovererFactory = new BoostTestDiscovererFactory(stubListContentHelper);
-            BoostTestAdapterSettings settings = new BoostTestAdapterSettings();
-            settings.ExternalTestRunner = new ExternalBoostTestRunnerSettings
-            {
-                ExtensionType = BoostTestDiscoverer.ExeExtension
-            };
+            BoostTestAdapterSettings settings = CreateAdapterSettings();
+            settings.ExternalTestRunner = CreateExternalRunnerSettings(BoostTestDiscoverer.ExeExtension);
 
             // source that supports --list-content parameter
             var source = "ListContentSupport" + BoostTestDiscoverer.ExeExtension;
-            var discoverer = boostTestDiscovererFactory.GetDiscoverer(source, settings);
+            var discoverer = this.DiscovererFactory.GetDiscoverer(source, settings);
 
             Assert.That(discoverer, Is.Not.Null);
             Assert.That(discoverer, Is.AssignableFrom(typeof(ExternalDiscoverer)));
 
             // source that NOT supports --list-content parameter
             source = "ParseSources" + BoostTestDiscoverer.ExeExtension;
-            discoverer = boostTestDiscovererFactory.GetDiscoverer(source, settings);
+            discoverer = this.DiscovererFactory.GetDiscoverer(source, settings);
 
             Assert.That(discoverer, Is.Not.Null);
             Assert.That(discoverer, Is.AssignableFrom(typeof(ExternalDiscoverer)));
 
             // source dll project
             source = "DllProject" + BoostTestDiscoverer.DllExtension;
-            discoverer = boostTestDiscovererFactory.GetDiscoverer(source, settings);
+            discoverer = this.DiscovererFactory.GetDiscoverer(source, settings);
 
             Assert.That(discoverer, Is.Null);
 
@@ -183,31 +192,19 @@ namespace BoostTestAdapterNunit
         [Test]
         public void CorrectSingleProjectBoostTestDiscovererDispatchingExternalDll()
         {
-            var stubListContentHelper = new StubListContentHelper();
-            var boostTestDiscovererFactory = new BoostTestDiscovererFactory(stubListContentHelper);
-            BoostTestAdapterSettings settings = new BoostTestAdapterSettings();
-            settings.ExternalTestRunner = new ExternalBoostTestRunnerSettings
-            {
-                ExtensionType = BoostTestDiscoverer.DllExtension
-            };
+            BoostTestAdapterSettings settings = CreateAdapterSettings();
+            settings.ExternalTestRunner = CreateExternalRunnerSettings(BoostTestDiscoverer.DllExtension);
 
             // source that supports --list-content parameter
             var source = "ListContentSupport" + BoostTestDiscoverer.ExeExtension;
-            var discoverer = boostTestDiscovererFactory.GetDiscoverer(source, settings);
+            var discoverer = this.DiscovererFactory.GetDiscoverer(source, settings);
 
             Assert.That(discoverer, Is.Not.Null);
             Assert.That(discoverer, Is.AssignableFrom(typeof(ListContentDiscoverer)));
-
-            // source that NOT supports --list-content parameter
-            source = "ParseSources" + BoostTestDiscoverer.ExeExtension;
-            discoverer = boostTestDiscovererFactory.GetDiscoverer(source, settings);
-
-            Assert.That(discoverer, Is.Not.Null);
-            Assert.That(discoverer, Is.AssignableFrom(typeof(SourceCodeDiscoverer)));
-
+ 
             // source dll project
             source = "DllProject" + BoostTestDiscoverer.DllExtension;
-            discoverer = boostTestDiscovererFactory.GetDiscoverer(source, settings);
+            discoverer = this.DiscovererFactory.GetDiscoverer(source, settings);
 
             Assert.That(discoverer, Is.Not.Null);
             Assert.That(discoverer, Is.AssignableFrom(typeof(ExternalDiscoverer)));
